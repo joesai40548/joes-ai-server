@@ -34,7 +34,7 @@ app.post('/api/gemini', async (req, res) => {
                 'Authorization': `Bearer ${HF_API_KEY}`,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ inputs: { image: Buffer.from(fileData, 'base64') }, parameters: { max_new_tokens: 256 } })
+            body: JSON.stringify({ inputs: { image: fileData }, parameters: { max_new_tokens: 256 } })
         });
 
         const data = await hfRes.json();
