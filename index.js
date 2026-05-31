@@ -3,6 +3,21 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 require('dotenv').config();
 
+const requiredEnvVars = [
+  'GROQ_API_KEY',
+  'HUGGINGFACE_API_KEY',
+  'GEMINI_API_KEY',
+  'ADMIN_EMAIL'
+];
+
+function validateEnv() {
+  const missing = requiredEnvVars.filter((key) => !process.env[key]);
+  if (missing.length > 0) {
+    console.warn('Missing required environment variables:', missing.join(', '));
+  }
+  return missing;
+}
+
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(cors());
@@ -130,4 +145,5 @@ app.post('/api/chat', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+validateEnv();
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
