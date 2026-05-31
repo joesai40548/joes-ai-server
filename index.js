@@ -21,31 +21,23 @@ app.post('/api/gemini', async (req, res) => {
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
     if (!GEMINI_API_KEY) {
+        console.error("Missing GEMINI_API_KEY");
         return res.status(500).json({ error: 'Gemini API key missing on server.' });
     }
 
     const model = 'gemini-2.0-flash';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-
     const parts = [];
     if (message) parts.push({ text: message });
     if (fileData && mimeType) {
-        parts.push({
-            inline_data: {
-                mime_type: mimeType,
-                data: fileData
-            }
-        });
+        parts.push({ inline_data: { mime_type: mimeType, data: fileData } });
     }
 
     try {
         const geminiRes = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{ parts }],
-                generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
-            })
+            body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.7, maxOutputTokens: 2048 } })
         });
 
         const data = await geminiRes.json();
@@ -54,6 +46,26 @@ app.post('/api/gemini', async (req, res) => {
     } catch (error) {
         console.error('Gemini Error:', error);
         res.status(500).json({ error: 'Failed to communicate with Gemini.' });
+    }
+});
+
+app.get('/api/test-gemini', async (req, res) => {
+    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+    if (!GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY is not set in environment.' });
+    try {
+        const probeUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+        const probe = await fetch(probeUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: 'Say: ok' }] }], generationConfig: { maxOutputTokens: 5 } })
+        });
+        const data = await probe.json();
+        if (!probe.ok) {
+            return res.status(500).json({ status: probe.status, error: data?.error?.message || 'Gemini probe failed' });
+        }
+        res.json({ status: 'ok', text: data?.candidates?.[0]?.content?.parts?.[0]?.text || '' });
+    } catch (error) {
+        res.status(500).json({ error: 'Gemini probe request failed' });
     }
 });
 
