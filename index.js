@@ -34,7 +34,7 @@ app.post('/api/check-admin', (req, res) => {
 
 // 4. The Groq Proxy Route
 app.post('/api/chat', async (req, res) => {
-    const { messages, model, temperature, max_tokens } = req.body;
+    const { messages, model, temperature, max_tokens, stream } = req.body;
     const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
     if (!GROQ_API_KEY) {
@@ -43,7 +43,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     try {
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${GROQ_API_KEY}`,
@@ -53,12 +53,25 @@ app.post('/api/chat', async (req, res) => {
                 model: model || 'llama-3.1-8b-instant',
                 messages: messages,
                 temperature: temperature || 0.7,
-                max_tokens: max_tokens || 1000
+                max_tokens: max_tokens || 1000,
+                stream: stream !== false
             })
         });
 
-        const data = await response.json();
-        res.json(data);
+        if (stream !== false && groqRes.headers.get('content-type')?.includes('text/event-stream')) {
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+            groqRes.body.pipe(res);
+
+            groqRes.body.on('error', () => {
+                res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: '' } }] })}\n\n`);
+                res.end();
+            });
+        } else {
+            const data = await groqRes.json();
+            res.json(data);
+        }
     } catch (error) {
         console.error('Proxy Error:', error);
         res.status(500).json({ error: 'Failed to communicate with Groq.' });
