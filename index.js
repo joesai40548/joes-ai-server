@@ -18,34 +18,50 @@ app.post('/api/check-admin', (req, res) => {
 
 app.post('/api/gemini', async (req, res) => {
     const { message, fileData, mimeType } = req.body;
-    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+    const HF_API_KEY = process.env.HUGGINGFACE_API_KEY;
 
-    if (!GEMINI_API_KEY) {
-        console.error("Missing GEMINI_API_KEY");
-        return res.status(500).json({ error: 'Gemini API key missing on server.' });
+    if (!HF_API_KEY) {
+        return res.status(500).json({ error: 'Hugging Face API key missing on server.' });
     }
 
-    const model = 'gemini-2.0-flash';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-    const parts = [];
-    if (message) parts.push({ text: message });
-    if (fileData && mimeType) {
-        parts.push({ inline_data: { mime_type: mimeType, data: fileData } });
-    }
+    const model = process.env.HF_VISION_MODEL || 'Salesforce/blip-image-captioning-base';
+    const url = `https://api-inference.huggingface.co/models/${model}`;
 
     try {
-        const geminiRes = await fetch(url, {
+        const hfRes = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.7, maxOutputTokens: 2048 } })
+            headers: {
+                'Authorization': `Bearer ${HF_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ inputs: { image: Buffer.from(fileData, 'base64') }, parameters: { max_new_tokens: 256 } })
         });
 
-        const data = await geminiRes.json();
-        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from Gemini.';
+        const data = await hfRes.json();
+        if (!hfRes.ok) {
+            console.error('HF Vision API error:', hfRes.status, data);
+            return res.status(hfRes.status).json({ error: data.error || 'Hugging Face vision request failed.' });
+        }
+
+        let text = '';
+        if (Array.isArray(data) && data[0]?.generated_text) {
+            text = data[0].generated_text;
+        } else if (typeof data === 'string') {
+            text = data;
+        } else if (data?.generated_text) {
+            text = data.generated_text;
+        } else {
+            text = 'Vision model returned no text.';
+        }
+
+        if (message) {
+            text = `${message}\n\nAttachment insight:\n${text}`;
+        }
+
         res.json({ text });
     } catch (error) {
-        console.error('Gemini Error:', error);
-        res.status(500).json({ error: 'Failed to communicate with Gemini.' });
+        console.error('HF Vision Error:', error);
+        res.status(500).json({ error: 'Failed to communicate with Hugging Face Vision API.' });
     }
 });
 
