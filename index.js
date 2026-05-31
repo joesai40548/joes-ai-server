@@ -3,12 +3,7 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 require('dotenv').config();
 
-const requiredEnvVars = [
-  'GROQ_API_KEY',
-  'HUGGINGFACE_API_KEY',
-  'GEMINI_API_KEY',
-  'ADMIN_EMAIL'
-];
+const requiredEnvVars = ['GROQ_API_KEY', 'GEMINI_API_KEY', 'ADMIN_EMAIL'];
 
 function validateEnv() {
   const missing = requiredEnvVars.filter((key) => !process.env[key]);
@@ -19,7 +14,8 @@ function validateEnv() {
 }
 
 const app = express();
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(cors());
 
 app.get('/', (req, res) => res.send('Joes AI Backend is running.'));
@@ -33,50 +29,53 @@ app.post('/api/check-admin', (req, res) => {
 
 app.post('/api/gemini', async (req, res) => {
     const { message, fileData, mimeType } = req.body;
-    const HF_API_KEY = process.env.HUGGINGFACE_API_KEY;
+    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-    if (!HF_API_KEY) {
-        return res.status(500).json({ error: 'Hugging Face API key missing on server.' });
+    if (!GEMINI_API_KEY) {
+        return res.status(500).json({ error: 'Gemini API key missing on server.' });
     }
 
-    const model = process.env.HF_VISION_MODEL || 'Salesforce/blip-image-captioning-base';
-    const url = `https://api-inference.huggingface.co/models/${model}`;
-
     try {
-        const hfRes = await fetch(url, {
+        // Using Gemini 1.5 Flash (Most generous free tier: 1,500 requests/day)
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+        const payload = {
+            contents: [{
+                parts: [
+                    { text: message || "Please describe this attachment in detail." },
+                    {
+                        inline_data: {
+                            mime_type: mimeType,
+                            data: fileData // This is the base64 string from your frontend
+                        }
+                    }
+                ]
+            }]
+        };
+
+        const response = await fetch(url, {
             method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${HF_API_KEY}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ inputs: { image: fileData }, parameters: { max_new_tokens: 256 } })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
         });
 
-        const data = await hfRes.json();
-        if (!hfRes.ok) {
-            console.error('HF Vision API error:', hfRes.status, data);
-            return res.status(hfRes.status).json({ error: data.error || 'Hugging Face vision request failed.' });
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error('Gemini API Error Response:', data);
+            return res.status(response.status).json({
+                error: data.error?.message || 'Gemini processing failed.'
+            });
         }
 
-        let text = '';
-        if (Array.isArray(data) && data[0]?.generated_text) {
-            text = data[0].generated_text;
-        } else if (typeof data === 'string') {
-            text = data;
-        } else if (data?.generated_text) {
-            text = data.generated_text;
-        } else {
-            text = 'Vision model returned no text.';
-        }
+        // Extracting the AI's text response
+        const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "AI could not generate a description.";
 
-        if (message) {
-            text = `${message}\n\nAttachment insight:\n${text}`;
-        }
+        res.json({ text: aiResponse });
 
-        res.json({ text });
     } catch (error) {
-        console.error('HF Vision Error:', error);
-        res.status(500).json({ error: 'Failed to communicate with Hugging Face Vision API.' });
+        console.error('Gemini Route Crash:', error);
+        res.status(500).json({ error: 'Internal server error processing the image.' });
     }
 });
 
