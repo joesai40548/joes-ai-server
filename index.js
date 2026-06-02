@@ -24,7 +24,8 @@ function getSystemPrompt(mode) {
         "IMPORTANT RULES FOR DATA PRESENTATION:\n" +
         "1. TABLES: When presenting structured comparative data, lists, or metrics, you MUST format them as clean Markdown tables (using standard pipe syntax: | Column | Column |).\n" +
         "2. ILLUSTRATIONS & DIAGRAMS: When explaining workflows, architectures, hierarchies, cycles, or software systems, you are encouraged to write visual flowcharts, sequences, or mindmaps using Mermaid.js syntax inside a code block marked with 'mermaid' (e.g. ```mermaid\\n graph TD;\\n A-->B;\\n```).\n" +
-        "3. EMOJIS: Naturally incorporate high-quality, expressive emojis only where contextually helpful and appropriate. Do not exaggerate, spam, or overuse them. Keep their usage professional, balanced, and tasteful.";
+        "3. CITATIONS & REFERENCES: In your explanations, cite reliable academic or web references using standard hyperlinks [Reference Name](URL) pointing to real sites when explaining facts.\n" +
+        "4. EMOJIS: Naturally incorporate high-quality, expressive emojis only where contextually helpful and appropriate. Do not exaggerate, spam, or overuse them. Keep their usage professional, balanced, and tasteful.";
 
     switch(mode) {
         case 'code':
@@ -40,12 +41,13 @@ function getSystemPrompt(mode) {
 }
 
 // -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: LIST ALL SAVED CHAT SESSIONS
+// KOOFR WEBDAV ROUTE: LIST ALL SAVED CHAT SESSIONS (User-Isolated)
 // -----------------------------------------------------------
 app.get('/api/chats', async (req, res) => {
     const webdavUrl = process.env.CLOUDSYNC_URL;
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
+    const userId = req.headers['x-user-id'] || 'default';
 
     if (!webdavUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Config Missing: Set CLOUDSYNC variables on Render." });
@@ -72,12 +74,15 @@ app.get('/api/chats', async (req, res) => {
         let match;
         const files = [];
 
+        // Match only files associated with the active x-user-id header
+        const userPrefix = `JoesAI_Chat_${userId}__`;
+
         while ((match = hrefRegex.exec(xml)) !== null) {
             const decodedPath = decodeURIComponent(match[1]);
             const filename = decodedPath.split('/').pop();
             
-            if (filename && filename.startsWith('JoesAI_Chat_') && filename.endsWith('.json')) {
-                const rawParts = filename.replace('JoesAI_Chat_', '').replace('.json', '');
+            if (filename && filename.startsWith(userPrefix) && filename.endsWith('.json')) {
+                const rawParts = filename.replace(userPrefix, '').replace('.json', '');
                 const parts = rawParts.split('__');
                 const id = parts[0];
                 const title = parts[1] ? parts[1].replace(/-/g, ' ') : 'Saved Chat';
@@ -132,13 +137,14 @@ app.get('/api/chats/:filename', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: SAVE/UPDATE CHAT FILE
+// KOOFR WEBDAV ROUTE: SAVE/UPDATE CHAT FILE (User-Isolated)
 // -----------------------------------------------------------
 app.post('/api/chats', async (req, res) => {
     const { sessionId, title, history } = req.body;
     const webdavUrl = process.env.CLOUDSYNC_URL;
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
+    const userId = req.headers['x-user-id'] || 'default';
 
     if (!webdavUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Sync Config Missing on Render." });
@@ -146,7 +152,7 @@ app.post('/api/chats', async (req, res) => {
 
     try {
         const safeTitle = title.trim().replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-');
-        const filename = `JoesAI_Chat_${sessionId}__${safeTitle}.json`;
+        const filename = `JoesAI_Chat_${userId}__${sessionId}__${safeTitle}.json`;
 
         const baseUrl = webdavUrl.endsWith('/') ? webdavUrl : `${webdavUrl}/`;
         const uploadUrl = `${baseUrl}${filename}`;
@@ -181,6 +187,7 @@ app.post('/api/chats/rename', async (req, res) => {
     const webdavUrl = process.env.CLOUDSYNC_URL;
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
+    const userId = req.headers['x-user-id'] || 'default';
 
     if (!webdavUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Config Missing: Set CLOUDSYNC variables on Render." });
@@ -188,14 +195,13 @@ app.post('/api/chats/rename', async (req, res) => {
 
     try {
         const safeTitle = newTitle.trim().replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-');
-        const newFilename = `JoesAI_Chat_${sessionId}__${safeTitle}.json`;
+        const newFilename = `JoesAI_Chat_${userId}__${sessionId}__${safeTitle}.json`;
 
         const baseUrl = webdavUrl.endsWith('/') ? webdavUrl : `${webdavUrl}/`;
         const oldUrl = `${baseUrl}${oldFilename}`;
         const newUrl = `${baseUrl}${newFilename}`;
         const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
 
-        // Execute WebDAV MOVE command with target Destination header
         const response = await fetch(oldUrl, {
             method: 'MOVE',
             headers: {
@@ -252,10 +258,10 @@ app.delete('/api/chats/:filename', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// ADAPTIVE GEMINI 2.5 FLASH ROUTE (Multimodal input)
+// ADAPTIVE GEMINI 2.5 FLASH ROUTE (Multimodal & Multi-turn History)
 // -----------------------------------------------------------
 app.post('/api/gemini', async (req, res) => {
-    const { message, fileData, mimeType, mode } = req.body;
+    const { message, fileData, mimeType, mode, chatHistory } = req.body;
     const API_KEY = process.env.GEMINI_API_KEY;
 
     if (!API_KEY) {
@@ -266,21 +272,36 @@ app.post('/api/gemini', async (req, res) => {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
         const activeSystemInstruction = getSystemPrompt(mode);
 
+        // Convert the past conversation history into Gemini's multi-turn schema
+        const contents = [];
+        if (chatHistory && chatHistory.length > 0) {
+            chatHistory.forEach(msg => {
+                contents.push({
+                    role: msg.role === 'user' ? 'user' : 'model',
+                    parts: [{ text: msg.content || "Analyze this file." }]
+                });
+            });
+        }
+
+        // Add the current multimodal transaction payload to the sequence
+        contents.push({
+            role: 'user',
+            parts: [
+                { text: message || "Analyze this file in detail." },
+                { 
+                    inline_data: { 
+                        mime_type: mimeType || "image/jpeg", 
+                        data: fileData 
+                    } 
+                }
+            ]
+        });
+
         const payload = {
             systemInstruction: {
                 parts: [{ text: activeSystemInstruction }]
             },
-            contents: [{
-                parts: [
-                    { text: message || "Analyze this file in detail." },
-                    { 
-                        inline_data: { 
-                            mime_type: mimeType || "image/jpeg", 
-                            data: fileData 
-                        } 
-                    }
-                ]
-            }]
+            contents: contents
         };
 
         const response = await fetch(url, {
