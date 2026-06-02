@@ -5,7 +5,7 @@ require('dotenv').config();
 
 const app = express();
 
-// Set limits to 100mb for high-res images and audio
+// Set limits to 100mb for high-res images, videos, and documents
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(cors());
@@ -13,7 +13,7 @@ app.use(cors());
 app.get('/', (req, res) => res.send('Joes AI Backend Status: Online'));
 
 // -----------------------------------------------------------
-// FIXED GEMINI ROUTE
+// STABLE GEMINI 2.5 FLASH ROUTE
 // -----------------------------------------------------------
 app.post('/api/gemini', async (req, res) => {
     const { message, fileData, mimeType } = req.body;
@@ -24,9 +24,8 @@ app.post('/api/gemini', async (req, res) => {
     }
 
     try {
-        // Changed v1beta to v1 for better stability
-        // Model string 'gemini-1.5-flash' is the correct modern name
-        const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
+        // Updated endpoint query targeting the 2.5 Flash model architecture
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
 
         const payload = {
             contents: [{
@@ -50,7 +49,7 @@ app.post('/api/gemini', async (req, res) => {
 
         const data = await response.json();
 
-        // If Google returns an error, send that error detail to the frontend
+        // If Google returns an error, securely catch and relay details
         if (!response.ok) {
             console.error('Google API Error Details:', data);
             return res.status(response.status).json({ 
@@ -67,13 +66,14 @@ app.post('/api/gemini', async (req, res) => {
     }
 });
 
-// Admin and Chat routes kept for your app logic
+// Admin verification route
 app.post('/api/check-admin', (req, res) => {
     const { email } = req.body;
     const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
     res.json({ isAdmin: email?.toLowerCase() === ADMIN_EMAIL?.toLowerCase() });
 });
 
+// Groq fallback/chat routes
 app.post('/api/chat', async (req, res) => {
     const { messages } = req.body;
     const GROQ_API_KEY = process.env.GROQ_API_KEY;
@@ -87,7 +87,9 @@ app.post('/api/chat', async (req, res) => {
         });
         const data = await groqRes.json();
         res.json(data);
-    } catch (error) { res.status(500).json({ error: 'Groq API failure' }); }
+    } catch (error) { 
+        res.status(500).json({ error: 'Groq API failure' }); 
+    }
 });
 
 const PORT = process.env.PORT || 3000;
