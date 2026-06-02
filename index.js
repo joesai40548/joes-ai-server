@@ -174,6 +174,49 @@ app.post('/api/chats', async (req, res) => {
 });
 
 // -----------------------------------------------------------
+// KOOFR WEBDAV ROUTE: RENAME SPECIFIC FILE (MOVE METHOD)
+// -----------------------------------------------------------
+app.post('/api/chats/rename', async (req, res) => {
+    const { oldFilename, sessionId, newTitle } = req.body;
+    const webdavUrl = process.env.CLOUDSYNC_URL;
+    const user = process.env.CLOUDSYNC_USER;
+    const password = process.env.CLOUDSYNC_PASSWORD;
+
+    if (!webdavUrl || !user || !password) {
+        return res.status(400).json({ error: "Cloud Config Missing: Set CLOUDSYNC variables on Render." });
+    }
+
+    try {
+        const safeTitle = newTitle.trim().replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-');
+        const newFilename = `JoesAI_Chat_${sessionId}__${safeTitle}.json`;
+
+        const baseUrl = webdavUrl.endsWith('/') ? webdavUrl : `${webdavUrl}/`;
+        const oldUrl = `${baseUrl}${oldFilename}`;
+        const newUrl = `${baseUrl}${newFilename}`;
+        const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+
+        // Execute WebDAV MOVE command with target Destination header
+        const response = await fetch(oldUrl, {
+            method: 'MOVE',
+            headers: {
+                'Authorization': authHeader,
+                'Destination': newUrl
+            }
+        });
+
+        if (response.ok || response.status === 201 || response.status === 204) {
+            res.json({ success: true, filename: newFilename });
+        } else {
+            res.status(response.status).json({ error: "Failed to rename conversation." });
+        }
+
+    } catch (err) {
+        console.error("Koofr WebDAV MOVE Failure:", err);
+        res.status(500).json({ error: "Failed to rename file on Koofr." });
+    }
+});
+
+// -----------------------------------------------------------
 // KOOFR WEBDAV ROUTE: DELETE CHAT SESSION
 // -----------------------------------------------------------
 app.delete('/api/chats/:filename', async (req, res) => {
