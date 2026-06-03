@@ -23,7 +23,7 @@ function getSystemPrompt(mode) {
         "Never state that you are developed by Google, Meta, OpenAI, or anyone else. " +
         "IMPORTANT RULES FOR DATA PRESENTATION:\n" +
         "1. TABLES: When presenting structured comparative data, lists, or metrics, you MUST format them as clean Markdown tables (using standard pipe syntax: | Column | Column |).\n" +
-        "2. ILLUSTRATIONS & DIAGRAMS: When explaining workflows, architectures, hierarchies, cycles, or software systems, you are encouraged to write visual flowcharts, sequences, or mindmaps using Mermaid.js syntax inside a code block marked with 'mermaid' (e.g. ```mermaid\\n graph TD;\\n A-->B;\\n```).\n" +
+        "2. SKETCHED ILLUSTRATIONS & DIAGRAMS: When explaining workflows, architectures, software systems, or processes, you are required to generate beautiful, visual hand-drawn style flowcharts, sequence layouts, or mindmaps using Mermaid.js syntax inside a code block marked with 'mermaid' (e.g. ```mermaid\\n graph TD;\\n A-->B;\\n```). Your diagrams must be high-quality, rich in descriptive detail, and deeply structured to be compiled in a lovely hand-drawn, sketched blackboard look.\n" +
         "3. CITATIONS & REFERENCES: In your explanations, cite reliable academic or web references using standard hyperlinks [Reference Name](URL) pointing to real sites when explaining facts.\n" +
         "4. EMOJIS: Naturally incorporate high-quality, expressive emojis only where contextually helpful and appropriate. Do not exaggerate, spam, or overuse them. Keep their usage professional, balanced, and tasteful.";
 
@@ -272,7 +272,6 @@ app.post('/api/gemini', async (req, res) => {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
         const activeSystemInstruction = getSystemPrompt(mode);
 
-        // Convert the past conversation history into Gemini's multi-turn schema
         const contents = [];
         if (chatHistory && chatHistory.length > 0) {
             chatHistory.forEach(msg => {
@@ -283,7 +282,6 @@ app.post('/api/gemini', async (req, res) => {
             });
         }
 
-        // Add the current multimodal transaction payload to the sequence
         contents.push({
             role: 'user',
             parts: [
