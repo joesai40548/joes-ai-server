@@ -13,7 +13,8 @@ app.get('/', (req, res) => res.send('Joes AI Backend Status: Online and Configur
 
 /**
  * Custom Adaptive System Prompt Constructor
- * Controls Creator Identity and formats outputs for specific modes
+ * Hardcodes Joes AI / AKRAM JOES TECHNOLOGIES identity, structures tables, and
+ * commands the AI to output hand-drawn visual diagrams (Mermaid) and stable educational references.
  */
 function getSystemPrompt(mode) {
     const creatorIdentity = 
@@ -22,10 +23,10 @@ function getSystemPrompt(mode) {
         "If any user asks you who developed you, who owns you, or who built you, you must answer proudly that you were developed and are owned by AKRAM JOES TECHNOLOGIES. " +
         "Never state that you are developed by Google, Meta, OpenAI, or anyone else. " +
         "IMPORTANT RULES FOR DATA PRESENTATION:\n" +
-        "1. TABLES: When presenting structured comparative data, lists, or metrics, you MUST format them as clean Markdown tables (using standard pipe syntax: | Column | Column |).\n" +
-        "2. SKETCHED ILLUSTRATIONS & DIAGRAMS: When explaining workflows, architectures, software systems, or processes, you are required to generate beautiful, visual hand-drawn style flowcharts, sequence layouts, or mindmaps using Mermaid.js syntax inside a code block marked with 'mermaid' (e.g. ```mermaid\\n graph TD;\\n A-->B;\\n```). Your diagrams must be high-quality, rich in descriptive detail, and deeply structured to be compiled in a lovely hand-drawn, sketched blackboard look.\n" +
-        "3. CITATIONS & REFERENCES: In your explanations, cite reliable academic or web references using standard hyperlinks [Reference Name](URL) pointing to real sites when explaining facts.\n" +
-        "4. EMOJIS: Naturally incorporate high-quality, expressive emojis only where contextually helpful and appropriate. Do not exaggerate, spam, or overuse them. Keep their usage professional, balanced, and tasteful.";
+        "1. TABLES: When presenting structured comparative data, comparative lists, or metrics, you MUST format them as clean Markdown tables (using standard pipe syntax: | Column | Column |).\n" +
+        "2. SKETCHED ILLUSTRATIONS & DIAGRAMS: When explaining workflows, architectures, software systems, or processes, you are required to generate beautiful, hand-drawn style flowcharts, sequence layouts, or mindmaps using Mermaid.js syntax inside a code block marked with 'mermaid' (e.g. ```mermaid\\n graph TD;\\n A-->B;\\n```).\n" +
+        "3. CITATIONS, STABLE IMAGES & REFERENCES: In your explanations, actively include inline functional images or real academic diagrams using standard markdown links: ![Alt text](image_url) or [Reference Name](URL). Use highly reliable, public domains like Unsplash (using descriptive keywords for photos, e.g. https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=600) or Wikimedia for rich educational context illustrations.\n" +
+        "4. EMOJIS: Naturally incorporate high-quality, expressive emojis only where contextually helpful and appropriate. Keep usage professional, balanced, and tasteful.";
 
     switch(mode) {
         case 'code':
@@ -33,36 +34,38 @@ function getSystemPrompt(mode) {
         case 'learn':
             return `${creatorIdentity} You are currently operating in LEARN MODE. Act as an academic guide and expert advisor. Provide deeply educational, clear explanations for concepts, answer multiple-choice questions by showing the exact logical reasoning step-by-step, and break down complex ideas using helpful terminology.`;
         case 'study':
-            return `${creatorIdentity} You are currently operating in STUDY MODE. Act as an empathetic academic tutor. Break down complex subjects using structured step-by-step concepts, real-life analogies, and bullet points. Use encouraging emojis occasionally to highlight key concepts, but do not exaggerate. Always close by presenting 2 brief quiz questions.`;
+            return `${creatorIdentity} You are currently operating in STUDY MODE. Act as an empathetic academic tutor. Break down complex subjects using structured step-by-step concepts, real-life analogies, and bullet points. Always close by presenting 2 brief quiz questions.`;
         case 'chat':
         default:
-            return `${creatorIdentity} You are currently operating in CHAT MODE. Be friendly, energetic, and engaging. Keep responses conversational, and use expressive emojis naturally and selectively where appropriate to enrich the tone without cluttering the output.`;
+            return `${creatorIdentity} You are currently operating in CHAT MODE. Be friendly, energetic, and engaging. Keep responses conversational, and use expressive emojis naturally and selectively where appropriate.`;
     }
 }
 
+// Helper to handle base URLs safely
+const getKoofrBaseUrl = () => {
+    const url = process.env.CLOUDSYNC_URL;
+    if (!url) return null;
+    return url.endsWith('/') ? url : `${url}/`;
+};
+
 // -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: LIST ALL SAVED CHAT SESSIONS (User-Isolated)
+// KOOFR WEBDAV ROUTE: LIST ALL SAVED CHAT SESSIONS
 // -----------------------------------------------------------
 app.get('/api/chats', async (req, res) => {
-    const webdavUrl = process.env.CLOUDSYNC_URL;
+    const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
     const userId = req.headers['x-user-id'] || 'default';
 
-    if (!webdavUrl || !user || !password) {
+    if (!baseUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Config Missing: Set CLOUDSYNC variables on Render." });
     }
 
     try {
-        const baseUrl = webdavUrl.endsWith('/') ? webdavUrl : `${webdavUrl}/`;
         const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
-
         const response = await fetch(baseUrl, {
             method: 'PROPFIND',
-            headers: {
-                'Authorization': authHeader,
-                'Depth': '1'
-            }
+            headers: { 'Authorization': authHeader, 'Depth': '1' }
         });
 
         if (!response.ok) {
@@ -73,14 +76,16 @@ app.get('/api/chats', async (req, res) => {
         const hrefRegex = /<(?:[^:>]+:)?href>([^<]+)<\/(?:[^:>]+:)?href>/gi;
         let match;
         const files = [];
-
-        // Match only files associated with the active x-user-id header
-        const userPrefix = `JoesAI_Chat_${userId}__`;
+        const userPrefix = `JoesAI_Chat_${userId.trim()}__`;
 
         while ((match = hrefRegex.exec(xml)) !== null) {
             const decodedPath = decodeURIComponent(match[1]);
-            const filename = decodedPath.split('/').pop();
+            let filename = decodedPath.split('/').pop();
             
+            if (filename) {
+                filename = filename.trim().split('?')[0]; 
+            }
+
             if (filename && filename.startsWith(userPrefix) && filename.endsWith('.json')) {
                 const rawParts = filename.replace(userPrefix, '').replace('.json', '');
                 const parts = rawParts.split('__');
@@ -93,7 +98,6 @@ app.get('/api/chats', async (req, res) => {
 
         files.sort((a, b) => b.id.localeCompare(a.id));
         res.json(files);
-
     } catch (err) {
         console.error("Koofr listing failure:", err);
         res.status(500).json({ error: "Failed to load chats from Koofr." });
@@ -105,20 +109,17 @@ app.get('/api/chats', async (req, res) => {
 // -----------------------------------------------------------
 app.get('/api/chats/:filename', async (req, res) => {
     const { filename } = req.params;
-    const webdavUrl = process.env.CLOUDSYNC_URL;
+    const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
 
-    if (!webdavUrl || !user || !password) {
+    if (!baseUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Sync Config Missing on Render." });
     }
 
     try {
-        const baseUrl = webdavUrl.endsWith('/') ? webdavUrl : `${webdavUrl}/`;
-        const uploadUrl = `${baseUrl}${filename}`;
         const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
-
-        const response = await fetch(uploadUrl, {
+        const response = await fetch(`${baseUrl}${filename}`, {
             method: 'GET',
             headers: { 'Authorization': authHeader }
         });
@@ -129,7 +130,6 @@ app.get('/api/chats/:filename', async (req, res) => {
 
         const data = await response.json();
         res.json(data);
-
     } catch (err) {
         console.error("Koofr read failure:", err);
         res.status(500).json({ error: "Failed to load chat file." });
@@ -137,28 +137,25 @@ app.get('/api/chats/:filename', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: SAVE/UPDATE CHAT FILE (User-Isolated)
+// KOOFR WEBDAV ROUTE: SAVE/UPDATE CHAT FILE
 // -----------------------------------------------------------
 app.post('/api/chats', async (req, res) => {
     const { sessionId, title, history } = req.body;
-    const webdavUrl = process.env.CLOUDSYNC_URL;
+    const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
     const userId = req.headers['x-user-id'] || 'default';
 
-    if (!webdavUrl || !user || !password) {
+    if (!baseUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Sync Config Missing on Render." });
     }
 
     try {
         const safeTitle = title.trim().replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-');
         const filename = `JoesAI_Chat_${userId}__${sessionId}__${safeTitle}.json`;
-
-        const baseUrl = webdavUrl.endsWith('/') ? webdavUrl : `${webdavUrl}/`;
-        const uploadUrl = `${baseUrl}${filename}`;
         const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
 
-        const response = await fetch(uploadUrl, {
+        const response = await fetch(`${baseUrl}${filename}`, {
             method: 'PUT',
             headers: {
                 'Authorization': authHeader,
@@ -172,7 +169,6 @@ app.post('/api/chats', async (req, res) => {
         } else {
             res.status(response.status).json({ error: "Failed to save to Koofr." });
         }
-
     } catch (err) {
         console.error("Koofr upload failure:", err);
         res.status(500).json({ error: "Failed to save file to Koofr." });
@@ -180,33 +176,29 @@ app.post('/api/chats', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: RENAME SPECIFIC FILE (MOVE METHOD)
+// KOOFR WEBDAV ROUTE: RENAME SPECIFIC FILE
 // -----------------------------------------------------------
 app.post('/api/chats/rename', async (req, res) => {
     const { oldFilename, sessionId, newTitle } = req.body;
-    const webdavUrl = process.env.CLOUDSYNC_URL;
+    const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
     const userId = req.headers['x-user-id'] || 'default';
 
-    if (!webdavUrl || !user || !password) {
+    if (!baseUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Config Missing: Set CLOUDSYNC variables on Render." });
     }
 
     try {
         const safeTitle = newTitle.trim().replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-');
         const newFilename = `JoesAI_Chat_${userId}__${sessionId}__${safeTitle}.json`;
-
-        const baseUrl = webdavUrl.endsWith('/') ? webdavUrl : `${webdavUrl}/`;
-        const oldUrl = `${baseUrl}${oldFilename}`;
-        const newUrl = `${baseUrl}${newFilename}`;
         const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
 
-        const response = await fetch(oldUrl, {
+        const response = await fetch(`${baseUrl}${oldFilename}`, {
             method: 'MOVE',
             headers: {
                 'Authorization': authHeader,
-                'Destination': newUrl
+                'Destination': `${baseUrl}${newFilename}`
             }
         });
 
@@ -215,7 +207,6 @@ app.post('/api/chats/rename', async (req, res) => {
         } else {
             res.status(response.status).json({ error: "Failed to rename conversation." });
         }
-
     } catch (err) {
         console.error("Koofr WebDAV MOVE Failure:", err);
         res.status(500).json({ error: "Failed to rename file on Koofr." });
@@ -227,20 +218,17 @@ app.post('/api/chats/rename', async (req, res) => {
 // -----------------------------------------------------------
 app.delete('/api/chats/:filename', async (req, res) => {
     const { filename } = req.params;
-    const webdavUrl = process.env.CLOUDSYNC_URL;
+    const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
 
-    if (!webdavUrl || !user || !password) {
+    if (!baseUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Sync Config Missing on Render." });
     }
 
     try {
-        const baseUrl = webdavUrl.endsWith('/') ? webdavUrl : `${webdavUrl}/`;
-        const uploadUrl = `${baseUrl}${filename}`;
         const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
-
-        const response = await fetch(uploadUrl, {
+        const response = await fetch(`${baseUrl}${filename}`, {
             method: 'DELETE',
             headers: { 'Authorization': authHeader }
         });
@@ -250,7 +238,6 @@ app.delete('/api/chats/:filename', async (req, res) => {
         } else {
             res.status(response.status).json({ error: "Failed to delete file on Koofr." });
         }
-
     } catch (err) {
         console.error("Koofr deletion failure:", err);
         res.status(500).json({ error: "Failed to delete file on Koofr." });
@@ -258,7 +245,7 @@ app.delete('/api/chats/:filename', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// ADAPTIVE GEMINI 2.5 FLASH ROUTE (Multimodal & Multi-turn History)
+// ADAPTIVE GEMINI ROUTE (Handles Text & Media Upload split)
 // -----------------------------------------------------------
 app.post('/api/gemini', async (req, res) => {
     const { message, fileData, mimeType, mode, chatHistory } = req.body;
@@ -277,28 +264,27 @@ app.post('/api/gemini', async (req, res) => {
             chatHistory.forEach(msg => {
                 contents.push({
                     role: msg.role === 'user' ? 'user' : 'model',
-                    parts: [{ text: msg.content || "Analyze this file." }]
+                    parts: [{ text: msg.content || "Analyze files safely." }]
                 });
             });
         }
 
-        contents.push({
-            role: 'user',
-            parts: [
-                { text: message || "Analyze this file in detail." },
-                { 
-                    inline_data: { 
-                        mime_type: mimeType || "image/jpeg", 
-                        data: fileData 
-                    } 
+        const userParts = [{ text: message || "Analyze this request." }];
+        
+        // Push raw visual asset data only if present
+        if (fileData) {
+            userParts.push({
+                inline_data: {
+                    mime_type: mimeType || "image/jpeg",
+                    data: fileData
                 }
-            ]
-        });
+            });
+        }
+
+        contents.push({ role: 'user', parts: userParts });
 
         const payload = {
-            systemInstruction: {
-                parts: [{ text: activeSystemInstruction }]
-            },
+            systemInstruction: { parts: [{ text: activeSystemInstruction }] },
             contents: contents
         };
 
@@ -317,7 +303,7 @@ app.post('/api/gemini', async (req, res) => {
             });
         }
 
-        const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this content request.";
+        const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request.";
         res.json({ text: aiResponse });
 
     } catch (err) {
@@ -327,7 +313,7 @@ app.post('/api/gemini', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// ADAPTIVE GROQ ROUTE (Conversational flow)
+// NORMALIZED ADAPTIVE GROQ ROUTE
 // -----------------------------------------------------------
 app.post('/api/chat', async (req, res) => {
     const { messages, mode } = req.body;
@@ -339,7 +325,6 @@ app.post('/api/chat', async (req, res) => {
 
     try {
         const activeSystemInstruction = getSystemPrompt(mode);
-
         const finalMessages = [
             { role: 'system', content: activeSystemInstruction },
             ...messages
@@ -358,7 +343,14 @@ app.post('/api/chat', async (req, res) => {
         });
 
         const data = await groqRes.json();
-        res.json(data);
+        
+        if (!groqRes.ok) {
+            return res.status(groqRes.status).json({ error: data.error?.message || "Groq request failed." });
+        }
+
+        // Normalized JSON format exactly matching Gemini endpoint { text: response }
+        const chatResponse = data.choices?.[0]?.message?.content || "Unable to extract response.";
+        res.json({ text: chatResponse });
         
     } catch (error) { 
         console.error('Groq handling failed:', error);
