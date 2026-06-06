@@ -45,11 +45,11 @@ function getSystemPrompt(mode) {
         "1. TABLES: When presenting structured comparative data, lists, or metrics, you MUST format them as clean Markdown tables but they should look smart with right font and formatting no space before content (using standard pipe syntax: | Column | Column |).\n" +
         "2. MERMAID DIAGRAMS: For workflows, simple flowcharts, or system process loops, write visual layout schemas using Mermaid.js syntax inside a code block marked with 'mermaid'.\n" +
         "3. REAL IMAGES, DRAWINGS & SKETCHES:\n" +
-        "   - When the user asks for a REAL PHOTO, images, SCENERY, or PHOTOGRAPH, incorporate high-quality Unsplash image URLs: ![Alt text](https://images.unsplash.com/photo-[ID]?q=80&w=600) or generic Unsplash source URLs: ![Alt text](https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=600).\n" +
+        "   - When presenting real photos or images, prioritize real, verified URLs from search engine results. Always format them as clickable Markdown images: ![Description](URL). Never use fake placeholder IDs that result in broken images.\n" +
         "   - When the user asks for a DRAWING, SKETCH, CUSTOM DIAGRAM, or ILLUSTRATION, you must generate a real-time AI image using the free Pollinations API. Format it exactly as a Markdown image link using this URL structure: ![Alt Text](https://image.pollinations.ai/prompt/[Descriptive-Detail-Prompt-Encoded]?width=600&height=400&nologo=true).\n" +
         "     Example for a cell wall: ![Bacterial Cell Wall](https://image.pollinations.ai/prompt/highly%20detailed%20microbiology%20labeled%20diagram%20of%20a%20bacterial%20cell%20wall?width=600&height=400&nologo=true).\n" +
         "     Example for a pencil sketch of a car: ![Sketch of a Car](https://image.pollinations.ai/prompt/pencil%20sketch%20hand%20drawn%20of%20a%20vintage%20classic%20car?width=600&height=400&nologo=true).\n" +
-        "4. CITATIONS & REFERENCES: In your explanations, cite reliable academic or web references using standard hyperlinks and clickable links in a highlight and at all times ensure that theyre correct and real  and if possible first scout the link to see whether it opens to the site we need  [Reference Name](clickable highlighted URL) pointing to real sites when explaining facts.\n" +
+        "4. CITATIONS & REFERENCES: In your explanations, cite reliable academic or web references using standard hyperlinks and clickable links in a highlight. Ensure at all times that they are completely correct, real, and fully functional absolute URLs starting with https://. Format them as [Reference Name](URL) pointing to real sites when explaining facts.\n" +
         "5. EMOJIS: Naturally incorporate high-quality, expressive emojis only where contextually helpful and appropriate and mind the tone of the user. Do not exaggerate, spam, or overuse them. Keep their usage professional, balanced, and tasteful.";
 
     switch(mode) {
@@ -382,13 +382,16 @@ app.post('/api/chat', async (req, res) => {
         res.status(500).json({ error: 'Groq API backend failure' }); 
     }
 });
+
 // -----------------------------------------------------------
 // GOOGLE SEARCH ROUTE: FETCH IMAGES AND LINKS
 // -----------------------------------------------------------
 app.get('/api/search', async (req, res) => {
     const { query, searchType } = req.query; // searchType can be 'image' or undefined for web
-    const API_KEY = process.env.Google_Search_API_KEY;
-    const CX = process.env.Google_Search_ENGINE_ID;
+    
+    // Fixed configuration fallback to prevent case-sensitive crashes
+    const API_KEY = process.env.GOOGLE_SEARCH_API_KEY || process.env.Google_Search_API_KEY;
+    const CX = process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.Google_Search_ENGINE_ID;
 
     if (!API_KEY || !CX) {
         return res.status(500).json({ error: "Google Search credentials missing." });
@@ -399,12 +402,12 @@ app.get('/api/search', async (req, res) => {
         const response = await fetch(url);
         const data = await response.json();
 
-        // Return a simplified array of results
+        // Return a precisely mapped array of results ensuring valid image strings
         const results = (data.items || []).map(item => ({
             title: item.title,
             link: item.link,
             snippet: item.snippet,
-            image: item.pagemap?.cse_image?.[0]?.src || item.link // For image search, item.link IS the image
+            image: searchType === 'image' ? item.link : (item.pagemap?.cse_image?.[0]?.src || item.pagemap?.cse_thumbnail?.[0]?.src || '')
         }));
 
         res.json(results);
