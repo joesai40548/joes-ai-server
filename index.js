@@ -15,7 +15,6 @@ app.get('/', (req, res) => res.send('Joes AI Backend Status: Online and Configur
 // SECURE CONFIG ROUTE: SERVE FIREBASE ENV VARIABLES TO FRONTEND
 // -----------------------------------------------------------
 app.get('/api/config', (req, res) => {
-    // Check if the primary API key exists to ensure env vars are loaded
     if (!process.env.FIREBASE_API_KEY) {
         return res.status(500).json({ error: "Firebase environment variables are missing." });
     }
@@ -31,26 +30,57 @@ app.get('/api/config', (req, res) => {
 });
 
 /**
+ * Core Google Search Engine Middleware Handler (Internal Lookup Engine)
+ * Automatically fetches real-world text content and images to enrich AI prompts.
+ */
+async function executeInternalSearch(query, searchType = '') {
+    const API_KEY = process.env.GOOGLE_SEARCH_API_KEY || process.env.Google_Search_API_KEY;
+    const CX = process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.Google_Search_ENGINE_ID;
+
+    if (!API_KEY || !CX || !query) return [];
+
+    try {
+        const url = `https://www.googleapis.com/customsearch/v1?q=${encodeURIComponent(query)}&key=${API_KEY}&cx=${CX}${searchType === 'image' ? '&searchType=image' : ''}`;
+        const response = await fetch(url);
+        if (!response.ok) return [];
+
+        const data = await response.json();
+        return (data.items || []).map(item => ({
+            title: item.title,
+            link: item.link,
+            snippet: item.snippet,
+            image: searchType === 'image' ? item.link : (item.pagemap?.cse_image?.[0]?.src || item.pagemap?.cse_thumbnail?.[0]?.src || '')
+        }));
+    } catch (err) {
+        console.error("Internal background search utility encountered an error:", err);
+        return [];
+    }
+}
+
+/**
  * Custom Adaptive System Prompt Constructor
  * Hardcodes Creator Identity, forces clean Markdown tables, high-quality clickable citations, 
- * and handles custom Real Photo vs. Sketched Diagram API generation instructions.
+ * and blends automated live Google Search references directly into current AI visibility.
  */
-function getSystemPrompt(mode) {
+function getSystemPrompt(mode, searchContext = "") {
     const creatorIdentity = 
         "You are Joes AI, a highly intelligent and custom-designed AI assistant. " +
-        "You were developed and are owned entirely by AKRAM JOES TECHNOLOGIES founded by KAIGWA AKRAM the INSPIRED ENGINEER. " +
+        "You were developed and are owned entirely by AKRAM JOES TECHNOLOGIES  and founded by KAIGWA AKRAM. " +
         "If any user asks you who developed you, who owns you, or who built you, you must answer proudly that you were developed and are owned by AKRAM JOES TECHNOLOGIES founded by KAIGWA AKRAM the INSPIRED ENGINEER. " +
         "Never state that you are developed by Google, Meta, OpenAI, or anyone else. " +
         "IMPORTANT RULES FOR DATA PRESENTATION:\n" +
-        "1. TABLES: When presenting structured comparative data, lists, or metrics, you MUST format them as clean Markdown tables but they should look smart with right font and formatting no space before content (using standard pipe syntax: | Column | Column |).\n" +
-        "2. MERMAID DIAGRAMS: For workflows, simple flowcharts, or system process loops, write visual layout schemas using Mermaid.js syntax inside a code block marked with 'mermaid'.\n" +
-        "3. REAL IMAGES, DRAWINGS & SKETCHES:\n" +
-        "   - When presenting real photos or images, prioritize real, verified URLs from search engine results. Always format them as clickable Markdown images: ![Description](marked clickable URL). Never use fake placeholder IDs that result in broken images and never show url links with images unavailable never do it.\n" +
-        "   - When the user asks for a DRAWING, SKETCH, CUSTOM DIAGRAM, or ILLUSTRATION, you must generate a real-time AI image using the free Pollinations API. Format it exactly as a Markdown image link using this URL structure: ![Alt Text](https://image.pollinations.ai/prompt/[Descriptive-Detail-Prompt-Encoded]?width=600&height=400&nologo=true).\n" +
-        "     Example for a cell wall: ![Bacterial Cell Wall](https://image.pollinations.ai/prompt/highly%20detailed%20microbiology%20labeled%20diagram%20of%20a%20bacterial%20cell%20wall?width=600&height=400&nologo=true).\n" +
-        "     Example for a pencil sketch of a car: ![Sketch of a Car](https://image.pollinations.ai/prompt/pencil%20sketch%20hand%20drawn%20of%20a%20vintage%20classic%20car?width=600&height=400&nologo=true).\n" +
-        "4. CITATIONS & REFERENCES: In your explanations, cite reliable academic or web references using standard hyperlinks and clickable links in a highlight. Ensure at all times that they are completely correct, real, and fully functional absolute URLs starting with www. Format them as [Reference Name](URL) pointing to real sites when explaining facts.\n" +
-        "5. EMOJIS: Naturally incorporate high-quality, expressive emojis only where contextually helpful and appropriate and mind the tone of the user. Do not exaggerate, spam, or overuse them. Keep their usage professional, balanced, and tasteful.";
+        "1. REAL-WORLD EXAMPLES & FACTUAL BREAKDOWNS (DISEASES, TECHNICAL SYSTEMS, ETC):\n" +
+        "   - When explaining complex real-world conditions, illnesses, scientific principles, or historical milestones, you MUST use real data from the search context below.\n" +
+        "   - Break information down with structured subsections: Overview, Symptoms/Characteristics, Diagnostic Data/Metrics, and Visual References.\n" +
+        "2. TABLES & DATA LAYOUTS: When presenting structured statistical comparisons, lists, timelines, or diagnostic parameters, you MUST format them as clean Markdown tables using standard pipe syntax: | Column | Column |. Ensure there is no trailing white space before the pipes.\n" +
+        "3. MERMAID DIAGRAMS: For workflows, anatomy flows, biological processes, or system engineering cycles, write clear operational schema maps using Mermaid.js syntax inside a code block marked with 'mermaid'.\n" +
+        "4. REAL IMAGES, DIAGRAMS & PHOTOS:\n" +
+        "   - You MUST extract verified URLs from the 'VERIFIED REAL IMAGE & DIAGRAM URLs' search section below when explaining concrete factual concepts (like a disease anatomy, a medical condition diagram, a mechanical machine component, or geographical views).\n" +
+        "   - Render them exactly as a Markdown link: ![Detailed Descriptive Asset Label](Direct Image URL). Never inject loose web URLs or broken links outside a markdown container.\n" +
+        "   - FALLBACK RULES (For abstract/creative concepts): Only if the user explicitly requests an artistic illustration, a custom sketch, or if the search parameters provide no functional image links, fall back to the Pollinations engine exactly as: ![Asset Illustration](https://image.pollinations.ai/prompt/[Encoded-Prompt-Text]?width=600&height=400&nologo=true) replacing spaces with %20.\n" +
+        "5. SPECIFIC CITATIONS: Accompany factual claims, statistics, and examples with clear hyperlinked annotations sourced directly from the web links provided below. Format them cleanly as: [Reference Source Name](URL).\n" +
+        "6. EMOJIS: Use premium, contextually helpful emojis naturally. Maintain an authoritative yet engaging tone based on the mode without spamming or overusing graphics." + 
+        searchContext;
 
     switch(mode) {
         case 'code':
@@ -102,7 +132,6 @@ app.get('/api/chats', async (req, res) => {
         let match;
         const files = [];
         
-        // If an authenticated admin opens the dashboard, bypass user file-path boundary isolation
         const userPrefix = isAdminRequest ? `JoesAI_Chat_` : `JoesAI_Chat_${userId.trim()}__`;
 
         while ((match = hrefRegex.exec(xml)) !== null) {
@@ -272,7 +301,7 @@ app.delete('/api/chats/:filename', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// ADAPTIVE GEMINI ROUTE (Handles Text & Media Upload split)
+// ADAPTIVE GEMINI ROUTE (With Injected Context Search Automation)
 // -----------------------------------------------------------
 app.post('/api/gemini', async (req, res) => {
     const { message, fileData, mimeType, mode, chatHistory } = req.body;
@@ -283,8 +312,34 @@ app.post('/api/gemini', async (req, res) => {
     }
 
     try {
+        let searchContext = "";
+        try {
+            const searchQuery = message || "latest details";
+            const [webMatches, imageMatches] = await Promise.all([
+                executeInternalSearch(searchQuery),
+                executeInternalSearch(searchQuery, 'image')
+            ]);
+
+            if (webMatches.length > 0 || imageMatches.length > 0) {
+                searchContext = "\n\n\n=== VERIFIED REAL-TIME GOOGLE SEARCH RESULTS ===\n" +
+                                "The following blocks contain authenticated live elements matching the request. Read from these items to deliver accurate responses, hyperlinked references, and real structural image URLs.\n\n" +
+                                "--- VERIFIED WEB LINKS & CITATION REFS ---\n";
+                webMatches.slice(0, 5).forEach((item, i) => {
+                    searchContext += `[Source ${i+1}]:\nTitle: ${item.title}\nURL: ${item.link}\nSummary: ${item.snippet}\n\n`;
+                });
+
+                searchContext += "--- VERIFIED REAL IMAGE & DIAGRAM URLs ---\n";
+                imageMatches.slice(0, 5).forEach((item, i) => {
+                    searchContext += `[Image Source ${i+1}]:\nLabel: ${item.title}\nDirect Image URL: ${item.link}\n\n`;
+                });
+                searchContext += "================================================\n";
+            }
+        } catch (searchErr) {
+            console.error("Background search intercept error:", searchErr);
+        }
+
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
-        const activeSystemInstruction = getSystemPrompt(mode);
+        const activeSystemInstruction = getSystemPrompt(mode, searchContext);
 
         const contents = [];
         if (chatHistory && chatHistory.length > 0) {
@@ -339,7 +394,7 @@ app.post('/api/gemini', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// NORMALIZED ADAPTIVE GROQ ROUTE
+// NORMALIZED ADAPTIVE GROQ ROUTE (With Injected Context Search Automation)
 // -----------------------------------------------------------
 app.post('/api/chat', async (req, res) => {
     const { messages, mode } = req.body;
@@ -350,7 +405,36 @@ app.post('/api/chat', async (req, res) => {
     }
 
     try {
-        const activeSystemInstruction = getSystemPrompt(mode);
+        const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || "";
+
+        let searchContext = "";
+        if (lastUserMsg) {
+            try {
+                const [webMatches, imageMatches] = await Promise.all([
+                    executeInternalSearch(lastUserMsg),
+                    executeInternalSearch(lastUserMsg, 'image')
+                ]);
+
+                if (webMatches.length > 0 || imageMatches.length > 0) {
+                    searchContext = "\n\n\n=== VERIFIED REAL-TIME GOOGLE SEARCH RESULTS ===\n" +
+                                    "The following blocks contain authenticated live elements matching the request. Read from these items to deliver accurate responses, hyperlinked references, and real structural image URLs.\n\n" +
+                                    "--- VERIFIED WEB LINKS & CITATION REFS ---\n";
+                    webMatches.slice(0, 5).forEach((item, i) => {
+                        searchContext += `[Source ${i+1}]:\nTitle: ${item.title}\nURL: ${item.link}\nSummary: ${item.snippet}\n\n`;
+                    });
+
+                    searchContext += "--- VERIFIED REAL IMAGE & DIAGRAM URLs ---\n";
+                    imageMatches.slice(0, 5).forEach((item, i) => {
+                        searchContext += `[Image Source ${i+1}]:\nLabel: ${item.title}\nDirect Image URL: ${item.link}\n\n`;
+                    });
+                    searchContext += "================================================\n";
+                }
+            } catch (searchErr) {
+                console.error("Background search intercept error inside Groq thread:", searchErr);
+            }
+        }
+
+        const activeSystemInstruction = getSystemPrompt(mode, searchContext);
         const finalMessages = [
             { role: 'system', content: activeSystemInstruction },
             ...messages
@@ -384,12 +468,11 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// GOOGLE SEARCH ROUTE: FETCH IMAGES AND LINKS
+// GOOGLE SEARCH ROUTE: FETCH IMAGES AND LINKS FOR DIRECT APP ENDPOINTS
 // -----------------------------------------------------------
 app.get('/api/search', async (req, res) => {
-    const { query, searchType } = req.query; // searchType can be 'image' or undefined for web
+    const { query, searchType } = req.query; 
     
-    // Fixed configuration fallback to prevent case-sensitive crashes
     const API_KEY = process.env.GOOGLE_SEARCH_API_KEY || process.env.Google_Search_API_KEY;
     const CX = process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.Google_Search_ENGINE_ID;
 
@@ -398,18 +481,7 @@ app.get('/api/search', async (req, res) => {
     }
 
     try {
-        const url = `https://www.googleapis.com/customsearch/v1?q=${encodeURIComponent(query)}&key=${API_KEY}&cx=${CX}${searchType === 'image' ? '&searchType=image' : ''}`;
-        const response = await fetch(url);
-        const data = await response.json();
-
-        // Return a precisely mapped array of results ensuring valid image strings
-        const results = (data.items || []).map(item => ({
-            title: item.title,
-            link: item.link,
-            snippet: item.snippet,
-            image: searchType === 'image' ? item.link : (item.pagemap?.cse_image?.[0]?.src || item.pagemap?.cse_thumbnail?.[0]?.src || '')
-        }));
-
+        const results = await executeInternalSearch(query, searchType);
         res.json(results);
     } catch (err) {
         res.status(500).json({ error: "Failed to fetch Google Search results." });
