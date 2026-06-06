@@ -387,8 +387,8 @@ app.post('/api/chat', async (req, res) => {
 // -----------------------------------------------------------
 app.get('/api/search', async (req, res) => {
     const { query, searchType } = req.query; // searchType can be 'image' or undefined for web
-    const API_KEY = process.env.GOOGLE_SEARCH_API_KEY;
-    const CX = process.env.GOOGLE_SEARCH_ENGINE_ID;
+    const API_KEY = process.env.Google_Search_API_KEY;
+    const CX = process.env.Google_Search_ENGINE_ID;
 
     if (!API_KEY || !CX) {
         return res.status(500).json({ error: "Google Search credentials missing." });
