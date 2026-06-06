@@ -7,36 +7,30 @@ require('dotenv').config();
 
 const app = express();
 
-// BUG FIX 1: Trust Render's Proxy so the rate limiter identifies users correctly 
-// and doesn't throw the 'ValidationError'
+// Set system deployment proxy context values for security modules
 app.set('trust proxy', 1);
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(cors());
 
-// -----------------------------------------------------------
-// SECURITY LAYER: RATE LIMITER CONFIGURATION
-// -----------------------------------------------------------
+// Anti-Spam Security Filter
 const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes window
-    max: 100, // Limit each IP to 100 requests per windowMs
+    windowMs: 15 * 60 * 1000, 
+    max: 100, 
     standardHeaders: true, 
     legacyHeaders: false, 
     message: { error: "Too many requests from this device. Please try again after 15 minutes." }
 });
 
-// Apply rate limiter security across all backend API channels
 app.use('/api/', apiLimiter);
 
 app.get('/', (req, res) => res.send('Joes AI Backend Status: Online and Configured.'));
 
-// -----------------------------------------------------------
-// SECURE CONFIG ROUTE: SERVE FIREBASE ENV VARIABLES TO FRONTEND
-// -----------------------------------------------------------
+// Configuration Relay Layer for Client Runtime Instantiations
 app.get('/api/config', (req, res) => {
     if (!process.env.FIREBASE_API_KEY) {
-        return res.status(500).json({ error: "Firebase environment variables are missing." });
+        return res.status(500).json({ error: "Firebase environment variables are missing on host environment." });
     }
 
     res.json({
@@ -77,7 +71,7 @@ async function executeInternalSearch(query, searchType = '') {
 }
 
 /**
- * Custom Adaptive System Prompt Constructor
+ * Prompt Architecture Engineering Layouts Matrix
  */
 function getSystemPrompt(mode, searchContext = "") {
     const creatorIdentity = 
@@ -113,7 +107,6 @@ function getSystemPrompt(mode, searchContext = "") {
     }
 }
 
-// Helper to handle base URLs safely
 const getKoofrBaseUrl = () => {
     const url = process.env.CLOUDSYNC_URL;
     if (!url) return null;
@@ -121,7 +114,7 @@ const getKoofrBaseUrl = () => {
 };
 
 // -----------------------------------------------------------
-// LIVE ENGINE UTILITY: DYNAMIC CHAT GENERATION TO PDF STREAM
+// DYNAMIC CHAT GENERATION TO PDF STREAM ROUTE
 // -----------------------------------------------------------
 app.post('/api/chats/download-pdf', (req, res) => {
     const { title, history } = req.body;
@@ -165,13 +158,13 @@ app.post('/api/chats/download-pdf', (req, res) => {
 
         doc.end();
     } catch (err) {
-        console.error("PDF generation crash:", err);
+        console.error("PDF generation error:", err);
         if (!res.headersSent) res.status(500).json({ error: "Failed to generate PDF." });
     }
 });
 
 // -----------------------------------------------------------
-// KOOFR WEBDAV ROUTES
+// KOOFR WEBDAV STORAGE ROUTING LOGICS
 // -----------------------------------------------------------
 app.get('/api/chats', async (req, res) => {
     const baseUrl = getKoofrBaseUrl();
@@ -180,7 +173,7 @@ app.get('/api/chats', async (req, res) => {
     const userId = req.headers['x-user-id'] || 'default';
     const isAdminRequest = req.headers['x-is-admin'] === 'true';
 
-    if (!baseUrl || !user || !password) return res.status(400).json({ error: "Cloud Config Missing" });
+    if (!baseUrl || !user || !password) return res.status(400).json({ error: "Cloud Configuration Missing" });
 
     try {
         const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
@@ -188,7 +181,7 @@ app.get('/api/chats', async (req, res) => {
             method: 'PROPFIND',
             headers: { 'Authorization': authHeader, 'Depth': '1' }
         });
-        if (!response.ok) return res.status(response.status).json({ error: "Failed to list Koofr." });
+        if (!response.ok) return res.status(response.status).json({ error: "Failed to query files directory from storage provider backend." });
 
         const xml = await response.text();
         const hrefRegex = /<(?:[^:>]+:)?href>([^<]+)<\/(?:[^:>]+:)?href>/gi;
@@ -211,7 +204,7 @@ app.get('/api/chats', async (req, res) => {
         }
         files.sort((a, b) => b.id.localeCompare(a.id));
         res.json(files);
-    } catch (err) { res.status(500).json({ error: "Sync listing failed" }); }
+    } catch (err) { res.status(500).json({ error: "Sync listing operation failure" }); }
 });
 
 app.get('/api/chats/:filename', async (req, res) => {
@@ -221,7 +214,7 @@ app.get('/api/chats/:filename', async (req, res) => {
         const response = await fetch(`${baseUrl}${req.params.filename}`, { headers: { 'Authorization': authHeader }});
         const data = await response.json();
         res.json(data);
-    } catch (err) { res.status(500).json({ error: "Load failed" }); }
+    } catch (err) { res.status(500).json({ error: "Load operation failure" }); }
 });
 
 app.post('/api/chats', async (req, res) => {
@@ -238,7 +231,7 @@ app.post('/api/chats', async (req, res) => {
             body: JSON.stringify({ sessionId, title, history })
         });
         res.json({ success: true, filename });
-    } catch (err) { res.status(500).json({ error: "Save failed" }); }
+    } catch (err) { res.status(500).json({ error: "Save operation failure" }); }
 });
 
 app.post('/api/chats/rename', async (req, res) => {
@@ -254,7 +247,7 @@ app.post('/api/chats/rename', async (req, res) => {
             headers: { 'Authorization': authHeader, 'Destination': `${baseUrl}${newFilename}` }
         });
         res.json({ success: true, filename: newFilename });
-    } catch (err) { res.status(500).json({ error: "Rename failed" }); }
+    } catch (err) { res.status(500).json({ error: "Rename operation failure" }); }
 });
 
 app.delete('/api/chats/:filename', async (req, res) => {
@@ -262,14 +255,13 @@ app.delete('/api/chats/:filename', async (req, res) => {
         const authHeader = 'Basic ' + Buffer.from(`${process.env.CLOUDSYNC_USER}:${process.env.CLOUDSYNC_PASSWORD}`).toString('base64');
         await fetch(`${getKoofrBaseUrl()}${req.params.filename}`, { method: 'DELETE', headers: { 'Authorization': authHeader }});
         res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: "Delete failed" }); }
+    } catch (err) { res.status(500).json({ error: "Delete operation failure" }); }
 });
 
 // -----------------------------------------------------------
-// ADAPTIVE GEMINI ROUTE (With Bug Fixes for Empty History)
+// ADAPTIVE GEMINI INFERENCE PROMPT PIPELINE ROUTE
 // -----------------------------------------------------------
 app.post('/api/gemini', async (req, res) => {
-    // BUG FIX 2: Default chatHistory to an empty array so .length doesn't fail
     const { message, fileData, mimeType, mode, chatHistory = [] } = req.body;
     const API_KEY = process.env.GEMINI_API_KEY;
 
@@ -314,21 +306,19 @@ app.post('/api/gemini', async (req, res) => {
         const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "No AI text extracted.";
         res.json({ text: aiResponse });
 
-    } catch (err) { res.status(500).json({ error: 'Gemini server-side crash' }); }
+    } catch (err) { res.status(500).json({ error: 'Gemini system connection crash' }); }
 });
 
 // -----------------------------------------------------------
-// NORMALIZED ADAPTIVE GROQ ROUTE (With Proxy Fix & History Safety)
+// NORMALIZED ADAPTIVE GROQ INFERENCE PIPELINE ROUTE
 // -----------------------------------------------------------
 app.post('/api/chat', async (req, res) => {
-    // BUG FIX 3: Default messages to an empty array so .filter doesn't throw Error
     const { messages = [], mode } = req.body;
     const GROQ_API_KEY = process.env.GROQ_API_KEY;
     
     if (!GROQ_API_KEY) return res.status(500).json({ error: "Groq key missing." });
 
     try {
-        // Safe check for message content
         const msgList = Array.isArray(messages) ? messages : [];
         const lastUserMsg = msgList.filter(m => m.role === 'user').pop()?.content || "";
 
@@ -357,8 +347,8 @@ app.post('/api/chat', async (req, res) => {
         res.json({ text: chatResponse });
         
     } catch (error) { 
-        console.error('Groq failure:', error);
-        res.status(500).json({ error: 'Groq connection failed' }); 
+        console.error('Groq connection failure:', error);
+        res.status(500).json({ error: 'Groq connection system error' }); 
     }
 });
 
@@ -366,7 +356,7 @@ app.get('/api/search', async (req, res) => {
     try {
         const results = await executeInternalSearch(req.query.query, req.query.searchType);
         res.json(results);
-    } catch (err) { res.status(500).json({ error: "Search failed" }); }
+    } catch (err) { res.status(500).json({ error: "Search execution module fault" }); }
 });
 
 app.post('/api/check-admin', (req, res) => {
@@ -376,4 +366,4 @@ app.post('/api/check-admin', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Backend Active on Port ${PORT}`));
+app.listen(PORT, () => console.log(`Backend Server Processing Node Active on Port ${PORT}`));
