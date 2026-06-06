@@ -382,6 +382,36 @@ app.post('/api/chat', async (req, res) => {
         res.status(500).json({ error: 'Groq API backend failure' }); 
     }
 });
+// -----------------------------------------------------------
+// GOOGLE SEARCH ROUTE: FETCH IMAGES AND LINKS
+// -----------------------------------------------------------
+app.get('/api/search', async (req, res) => {
+    const { query, searchType } = req.query; // searchType can be 'image' or undefined for web
+    const API_KEY = process.env.GOOGLE_SEARCH_API_KEY;
+    const CX = process.env.GOOGLE_SEARCH_ENGINE_ID;
+
+    if (!API_KEY || !CX) {
+        return res.status(500).json({ error: "Google Search credentials missing." });
+    }
+
+    try {
+        const url = `https://www.googleapis.com/customsearch/v1?q=${encodeURIComponent(query)}&key=${API_KEY}&cx=${CX}${searchType === 'image' ? '&searchType=image' : ''}`;
+        const response = await fetch(url);
+        const data = await response.json();
+
+        // Return a simplified array of results
+        const results = (data.items || []).map(item => ({
+            title: item.title,
+            link: item.link,
+            snippet: item.snippet,
+            image: item.pagemap?.cse_image?.[0]?.src || item.link // For image search, item.link IS the image
+        }));
+
+        res.json(results);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to fetch Google Search results." });
+    }
+});
 
 // -----------------------------------------------------------
 // ADMIN ACCOUNT SECURE CHECK ENTRY
