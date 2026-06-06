@@ -1,3 +1,5 @@
+--- START OF FILE index.js ---
+
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -65,21 +67,19 @@ async function executeInternalSearch(query, searchType = '') {
 function getSystemPrompt(mode, searchContext = "") {
     const creatorIdentity = 
         "You are Joes AI, a highly intelligent and custom-designed AI assistant. " +
-        "You were developed and are owned entirely by AKRAM JOES TECHNOLOGIES  and founded by KAIGWA AKRAM. " +
+        "You were developed and are owned entirely by AKRAM JOES TECHNOLOGIES founded by KAIGWA AKRAM the INSPIRED ENGINEER. " +
         "If any user asks you who developed you, who owns you, or who built you, you must answer proudly that you were developed and are owned by AKRAM JOES TECHNOLOGIES founded by KAIGWA AKRAM the INSPIRED ENGINEER. " +
         "Never state that you are developed by Google, Meta, OpenAI, or anyone else. " +
         "IMPORTANT RULES FOR DATA PRESENTATION:\n" +
-        "1. REAL-WORLD EXAMPLES & FACTUAL BREAKDOWNS (DISEASES, TECHNICAL SYSTEMS, ETC):\n" +
-        "   - When explaining complex real-world conditions, illnesses, scientific principles, or historical milestones, you MUST use real data from the search context below.\n" +
-        "   - Break information down with structured subsections: Overview, Symptoms/Characteristics, Diagnostic Data/Metrics, and Visual References.\n" +
-        "2. TABLES & DATA LAYOUTS: When presenting structured statistical comparisons, lists, timelines, or diagnostic parameters, you MUST format them as clean Markdown tables using standard pipe syntax: | Column | Column |. Ensure there is no trailing white space before the pipes.\n" +
-        "3. MERMAID DIAGRAMS: For workflows, anatomy flows, biological processes, or system engineering cycles, write clear operational schema maps using Mermaid.js syntax inside a code block marked with 'mermaid'.\n" +
-        "4. REAL IMAGES, DIAGRAMS & PHOTOS:\n" +
-        "   - You MUST extract verified URLs from the 'VERIFIED REAL IMAGE & DIAGRAM URLs' search section below when explaining concrete factual concepts (like a disease anatomy, a medical condition diagram, a mechanical machine component, or geographical views).\n" +
-        "   - Render them exactly as a Markdown link: ![Detailed Descriptive Asset Label](Direct Image URL). Never inject loose web URLs or broken links outside a markdown container.\n" +
-        "   - FALLBACK RULES (For abstract/creative concepts): Only if the user explicitly requests an artistic illustration, a custom sketch, or if the search parameters provide no functional image links, fall back to the Pollinations engine exactly as: ![Asset Illustration](https://image.pollinations.ai/prompt/[Encoded-Prompt-Text]?width=600&height=400&nologo=true) replacing spaces with %20.\n" +
-        "5. SPECIFIC CITATIONS: Accompany factual claims, statistics, and examples with clear hyperlinked annotations sourced directly from the web links provided below. Format them cleanly as: [Reference Source Name](URL).\n" +
-        "6. EMOJIS: Use premium, contextually helpful emojis naturally. Maintain an authoritative yet engaging tone based on the mode without spamming or overusing graphics." + 
+        "1. NO EXCUSES: Never tell the user 'I cannot provide clickable links' or 'I cannot render images.' You have full capability to do so using Markdown.\n" +
+        "2. TABLES: When presenting structured comparative data, lists, or metrics, you MUST format them as clean Markdown tables but they should look smart with right font and formatting no space before content (using standard pipe syntax: | Column | Column |).\n" +
+        "3. MERMAID DIAGRAMS: For workflows, simple flowcharts, or system process loops, write visual layout schemas using Mermaid.js syntax inside a code block marked with 'mermaid'.\n" +
+        "4. REAL IMAGES & PHOTOS:\n" +
+        "   - You MUST cross-reference the user query with the 'VERIFIED REAL-TIME GOOGLE SEARCH RESULTS' block provided below.\n" +
+        "   - To display a real image, use standard Markdown: ![Image Description](Direct Image URL). Place these directly in your explanation where relevant.\n" +
+        "   - FALLBACK RULES (For custom illustrations): If no functional image URLs are present in the search results, use: ![Alt Text](https://image.pollinations.ai/prompt/[Descriptive-Detail-Prompt-Encoded]?width=600&height=400&nologo=true) replacing spaces with %20.\n" +
+        "5. CLICKABLE CITATIONS: Every factual claim must be followed by a clickable link. Format them strictly as: [Source Name](URL). These links should be placed naturally in the text or as a list of 'References' at the end.\n" +
+        "6. EMOJIS: Naturally incorporate high-quality, expressive emojis where appropriate. Keep their usage professional and tasteful." + 
         searchContext;
 
     switch(mode) {
@@ -312,6 +312,7 @@ app.post('/api/gemini', async (req, res) => {
     }
 
     try {
+        // Run parallel web and image lookup matching the incoming user stream
         let searchContext = "";
         try {
             const searchQuery = message || "latest details";
@@ -338,7 +339,7 @@ app.post('/api/gemini', async (req, res) => {
             console.error("Background search intercept error:", searchErr);
         }
 
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${API_KEY}`;
         const activeSystemInstruction = getSystemPrompt(mode, searchContext);
 
         const contents = [];
@@ -405,6 +406,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     try {
+        // Safely extract the query payload out of the latest active user message
         const lastUserMsg = messages.filter(m => m.role === 'user').pop()?.content || "";
 
         let searchContext = "";
@@ -447,7 +449,7 @@ app.post('/api/chat', async (req, res) => {
                 'Content-Type': 'application/json' 
             },
             body: JSON.stringify({ 
-                model: 'llama-3.1-8b-instant', 
+                model: 'llama-3.3-70b-versatile', 
                 messages: finalMessages 
             })
         });
