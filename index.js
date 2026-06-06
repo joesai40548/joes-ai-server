@@ -13,8 +13,8 @@ app.get('/', (req, res) => res.send('Joes AI Backend Status: Online and Configur
 
 /**
  * Custom Adaptive System Prompt Constructor
- * Hardcodes Joes AI / AKRAM JOES TECHNOLOGIES identity, structures tables, and
- * commands the AI to output hand-drawn visual diagrams (Mermaid) and stable educational references.
+ * Hardcodes Creator Identity, forces clean Markdown tables, high-quality clickable citations, 
+ * and handles custom Real Photo vs. Sketched Diagram API generation instructions.
  */
 function getSystemPrompt(mode) {
     const creatorIdentity = 
@@ -23,10 +23,15 @@ function getSystemPrompt(mode) {
         "If any user asks you who developed you, who owns you, or who built you, you must answer proudly that you were developed and are owned by AKRAM JOES TECHNOLOGIES. " +
         "Never state that you are developed by Google, Meta, OpenAI, or anyone else. " +
         "IMPORTANT RULES FOR DATA PRESENTATION:\n" +
-        "1. TABLES: When presenting structured comparative data, comparative lists, or metrics, you MUST format them as clean Markdown tables (using standard pipe syntax: | Column | Column |).\n" +
-        "2. SKETCHED ILLUSTRATIONS & DIAGRAMS: When explaining workflows, architectures, software systems, or processes, you are required to generate beautiful, hand-drawn style flowcharts, sequence layouts, or mindmaps using Mermaid.js syntax inside a code block marked with 'mermaid' (e.g. ```mermaid\\n graph TD;\\n A-->B;\\n```).\n" +
-        "3. CITATIONS, STABLE IMAGES & REFERENCES: In your explanations, actively include inline functional images or real academic diagrams using standard markdown links: ![Alt text](image_url) or [Reference Name](URL). Use highly reliable, public domains like Unsplash (using descriptive keywords for photos, e.g. https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=600) or Wikimedia for rich educational context illustrations.\n" +
-        "4. EMOJIS: Naturally incorporate high-quality, expressive emojis only where contextually helpful and appropriate. Keep usage professional, balanced, and tasteful.";
+        "1. TABLES: When presenting structured comparative data, lists, or metrics, you MUST format them as clean Markdown tables but they should look smart with right font and formatting no space before content (using standard pipe syntax: | Column | Column |).\n" +
+        "2. MERMAID DIAGRAMS: For workflows, simple flowcharts, or system process loops, write visual layout schemas using Mermaid.js syntax inside a code block marked with 'mermaid'.\n" +
+        "3. REAL IMAGES, DRAWINGS & SKETCHES:\n" +
+        "   - When the user asks for a REAL PHOTO, images, SCENERY, or PHOTOGRAPH, incorporate high-quality Unsplash image URLs: ![Alt text](https://images.unsplash.com/photo-[ID]?q=80&w=600) or generic Unsplash source URLs: ![Alt text](https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=600).\n" +
+        "   - When the user asks for a DRAWING, SKETCH, CUSTOM DIAGRAM, or ILLUSTRATION, you must generate a real-time AI image using the free Pollinations API. Format it exactly as a Markdown image link using this URL structure: ![Alt Text](https://image.pollinations.ai/prompt/[Descriptive-Detail-Prompt-Encoded]?width=600&height=400&nologo=true).\n" +
+        "     Example for a cell wall: ![Bacterial Cell Wall](https://image.pollinations.ai/prompt/highly%20detailed%20microbiology%20labeled%20diagram%20of%20a%20bacterial%20cell%20wall?width=600&height=400&nologo=true).\n" +
+        "     Example for a pencil sketch of a car: ![Sketch of a Car](https://image.pollinations.ai/prompt/pencil%20sketch%20hand%20drawn%20of%20a%20vintage%20classic%20car?width=600&height=400&nologo=true).\n" +
+        "4. CITATIONS & REFERENCES: In your explanations, cite reliable academic or web references using standard hyperlinks and clickable links in a highlight and at all times ensure that theyre correct and real  and if possible first scout the link to see whether it opens to the site we need  [Reference Name](clickable highlighted URL) pointing to real sites when explaining facts.\n" +
+        "5. EMOJIS: Naturally incorporate high-quality, expressive emojis only where contextually helpful and appropriate and mind the tone of the user. Do not exaggerate, spam, or overuse them. Keep their usage professional, balanced, and tasteful.";
 
     switch(mode) {
         case 'code':
@@ -49,13 +54,14 @@ const getKoofrBaseUrl = () => {
 };
 
 // -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: LIST ALL SAVED CHAT SESSIONS
+// KOOFR WEBDAV ROUTE: LIST ALL SAVED CHAT SESSIONS (User-Isolated)
 // -----------------------------------------------------------
 app.get('/api/chats', async (req, res) => {
     const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
     const userId = req.headers['x-user-id'] || 'default';
+    const isAdminRequest = req.headers['x-is-admin'] === 'true';
 
     if (!baseUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Config Missing: Set CLOUDSYNC variables on Render." });
@@ -76,7 +82,9 @@ app.get('/api/chats', async (req, res) => {
         const hrefRegex = /<(?:[^:>]+:)?href>([^<]+)<\/(?:[^:>]+:)?href>/gi;
         let match;
         const files = [];
-        const userPrefix = `JoesAI_Chat_${userId.trim()}__`;
+        
+        // If an authenticated admin opens the dashboard, bypass user file-path boundary isolation
+        const userPrefix = isAdminRequest ? `JoesAI_Chat_` : `JoesAI_Chat_${userId.trim()}__`;
 
         while ((match = hrefRegex.exec(xml)) !== null) {
             const decodedPath = decodeURIComponent(match[1]);
@@ -137,7 +145,7 @@ app.get('/api/chats/:filename', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: SAVE/UPDATE CHAT FILE
+// KOOFR WEBDAV ROUTE: SAVE/UPDATE CHAT FILE (User-Isolated)
 // -----------------------------------------------------------
 app.post('/api/chats', async (req, res) => {
     const { sessionId, title, history } = req.body;
@@ -271,7 +279,6 @@ app.post('/api/gemini', async (req, res) => {
 
         const userParts = [{ text: message || "Analyze this request." }];
         
-        // Push raw visual asset data only if present
         if (fileData) {
             userParts.push({
                 inline_data: {
@@ -348,7 +355,6 @@ app.post('/api/chat', async (req, res) => {
             return res.status(groqRes.status).json({ error: data.error?.message || "Groq request failed." });
         }
 
-        // Normalized JSON format exactly matching Gemini endpoint { text: response }
         const chatResponse = data.choices?.[0]?.message?.content || "Unable to extract response.";
         res.json({ text: chatResponse });
         
@@ -358,10 +364,13 @@ app.post('/api/chat', async (req, res) => {
     }
 });
 
+// -----------------------------------------------------------
+// ADMIN ACCOUNT SECURE CHECK ENTRY
+// -----------------------------------------------------------
 app.post('/api/check-admin', (req, res) => {
     const { email } = req.body;
-    const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
-    res.json({ isAdmin: email?.toLowerCase() === ADMIN_EMAIL?.toLowerCase() });
+    const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "kaigwaakram123@gmail.com";
+    res.json({ isAdmin: email?.toLowerCase().trim() === ADMIN_EMAIL.toLowerCase().trim() });
 });
 
 const PORT = process.env.PORT || 3000;
