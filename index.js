@@ -178,7 +178,7 @@ app.post('/api/chat/stream', async (req, res) => {
 
         OPERATIONAL MODE: ${currentMode} (Unique persona engaged).
         MULTIMODAL: You can hear, see, and read the binary "${fileName}" attached. 
-        CITATION: Provide ONLY real links.
+        CITATION: Provide ONLY real clickable underlined and working links.
         IMAGES: Use ![Vis](${getSmartImage(message)}) or verified search links: ${grounding.imgs.join(', ')}
         `;
 
