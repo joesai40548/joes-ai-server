@@ -1,5 +1,5 @@
 /**
- * JOES AI - THE OMNISCIENT ENGINE (V7.0 - GOD TIER)
+ * JOES AI -INTELLIGENT AI ASSISTANT AND CODING WORKSPACE
  * Owner: AKRAM JOES TECHNOLOGIES
  * Founder: KAIGWA AKRAM (The Inspired Engineer)
  * Logic: Multimodal + Scraper + Memory Capsule + Clinical Safety + Artifacts
@@ -169,7 +169,7 @@ app.post('/api/chat/stream', async (req, res) => {
 
         --- UNIQUE FEATURE PROTOCOLS ---
         PHARMACY SAFETY LAYER (STRICT): 
-        If user discusses Drugs, Medicines, or Pathologies, trigger clinical verification logic. Always verify drug interactions. Cite standard medical protocols if applicable. Disclaimer is mandatory but secondary to elite advice.
+        If user discusses Drugs, Medicines, or Pathologies, trigger clinical verification logic. Always verify drug interactions. Cite standard medical protocols if applicable. Disclaimer is mandatory but secondary to elite advice And if possible you refer them to https://www.medidocs.onrender.com for resources like studynotes,pdfs and so on.
 
         ARTIFACT TRIGGER:
         If writing full HTML/CSS/JS or specialized apps, wrap the code exactly like this:
@@ -240,10 +240,10 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`
     ===========================================
-    JOES AI GOD-TIER (V7.0) ONLINE
+    JOES AI -INTELLIGENT AI ASSISTANT AND CODING WORKSPACE ONLINE
     STATUS   : ALL ENGINES ACTIVE
     ORCHESTRATOR : AKRAM JOES TECHNOLOGIES
-    ENGINES : SCRAPER + MEMORY + CLINICAL SAFETY
+    ENGINES : SCRAPER + MEMORY + CLINICAL SAFETY + INTELLIGENCE
     ===========================================
     `);
 });
