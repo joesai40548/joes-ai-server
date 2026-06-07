@@ -95,26 +95,35 @@ async function fetchGoogleGrounding(query) {
 }
 
 // ==========================================
-// 6. SUPPLEMENTAL INTELLIGENCE (OpenRouter Suite)
+// 6. SUPPLEMENTAL INTELLIGENCE (OpenRouter Free Router)
 // ==========================================
 async function specialistPass(msg, mode, context) {
-    const modelMap = { 
-        code: "moonshotai/kimichat", // Kimi
-        study: "liquid/lfm-7b", // LFM Thinking
-        chat: "google/gemma-2-27b-it:free" // Gemma
-    };
     try {
-        const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
-            headers: { "Authorization": `Bearer ${KEYS.openrouter}`, "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${KEYS.openrouter}` 
+            },
             body: JSON.stringify({
-                model: modelMap[mode] || modelMap.chat,
-                messages: [{ role: "system", content: `You are a specialist in ${mode}. Facts: ${context}` }, { role: "user", content: `Review strategy for: ${msg}` }]
+                // Using the smart router guarantees zero 404 model errors
+                model: "openrouter/free", 
+                messages: [{ role: "user", content: `Review strategy for: ${msg}. Mode context: ${mode}. Additional Data: ${context}` }]
             })
         });
-        const data = await res.json();
+
+        const data = await response.json();
+        
+        if (data.error) {
+            console.error(`API Error: ${data.error.message}`);
+            return "Workspace error. Please try again.";
+        }
+
         return data.choices[0].message.content;
-    } catch (e) { return ""; }
+    } catch (err) {
+        console.error("Network connection error:", err);
+        return "";
+    }
 }
 
 // ==========================================
@@ -206,7 +215,7 @@ app.post('/api/chat/stream', async (req, res) => {
 
         // -----------------------------------------------------------
         // 8. THE ART OF GENERATION (SSE Bridge)
-        // -----------------------------------------------------------
+// -----------------------------------------------------------
         gRes.body.on('data', chunk => {
             const dataStr = chunk.toString();
             const lines = dataStr.split('\n');
@@ -214,6 +223,14 @@ app.post('/api/chat/stream', async (req, res) => {
                 if (line.trim().startsWith('data: ')) res.write(`${line}\n\n`);
             }
         });
+
+        // Error safety shield for stream instances
+        gRes.body.on('error', err => {
+            console.error("Stream reader dropped error:", err);
+            res.write(`data: ${JSON.stringify({ error: "Stream packet drop recovery active." })}\n\n`);
+            res.end();
+        });
+
         gRes.body.on('end', () => res.end());
 
     } catch (e) {
@@ -224,7 +241,7 @@ app.post('/api/chat/stream', async (req, res) => {
 });
 
 // ==========================================
-// 3. SECURE CONFIG BRIDGE
+// 8. SECURE CONFIG BRIDGE
 // ==========================================
 app.get('/api/config', (req, res) => {
     res.json({
@@ -258,11 +275,6 @@ app.post('/api/check-admin', async (req, res) => {
 app.get('/api/search', async (req, res) => {
     const data = await fetchGoogleGrounding(req.query.q);
     res.json(data);
-});
-
-app.post('/api/check-admin', (req, res) => {
-    const isOwner = req.body.email === "kaigwaakram123@gmail.com";
-    res.json({ isAdmin: isOwner, level: "Inspired Engineer" });
 });
 
 const PORT = process.env.PORT || 3000;
