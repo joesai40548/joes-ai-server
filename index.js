@@ -205,7 +205,9 @@ async function executeDiscussionChain(message, mode, searchResults) {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "Authorization": `Bearer ${KEYS.openrouter}`
+                "Authorization": `Bearer ${KEYS.openrouter}`,
+                "HTTP-Referer": "https://joes-ai-server.onrender.com", // Recommended by OpenRouter docs
+                "X-Title": "Joes AI Workspace"
             },
             body: JSON.stringify({
                 model: modeConfig.openrouter,
@@ -228,14 +230,22 @@ async function executeDiscussionChain(message, mode, searchResults) {
         });
 
         const data = await response.json();
+        
+        // Explicitly log OpenRouter errors to your console for visibility if the endpoint blocks you
+        if (!response.ok) {
+            console.error("[OpenRouter API Error Details]:", data);
+            throw new Error(data?.error?.message || `HTTP error! status: ${response.status}`);
+        }
+
         if (data && data.choices && data.choices[0]?.message?.content) {
             console.log("[Discussion Chain] Stage 3 Complete. Final delivery ready.");
             return data.choices[0].message.content;
         }
-        throw new Error("OpenRouter response body was empty or structured incorrectly.");
+        throw new Error("OpenRouter response body fields missing choices array payload.");
     } catch (err) {
         console.error("Discussion Stage 3 (OpenRouter) Error:", err);
-        // Fallback to whichever model has data if the final stage hits a network block
+        // Fallback smoothly onto Gemini's response so your users do not encounter a crash
+        console.log("[Discussion Chain Fallback] Serving Gemini response directly due to OpenRouter block.");
         return geminiResponse || groqResponse || "System encounter threshold limitation. Please re-run the thread query.";
     }
 }
@@ -539,7 +549,16 @@ app.post('/api/gemini', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
     try {
         const { messages, mode } = req.body;
-        const searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || 'General inquiry';
+        
+        // Grab context from recent messages
+        let searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || 'General inquiry';
+        
+        // Truncate query safely to stay within Tavily's 400-character limit
+        if (searchQuery.length > 300) {
+            searchQuery = searchQuery.substring(0, 300) + '...';
+        }
+        
+        console.log(`[Search] Forwarding truncated query to Tavily (${searchQuery.length} chars)`);
         
         // Fetch web search context matching details via Tavily
         const searchResults = await fetchGoogleSearch(searchQuery, 'web', 5);
