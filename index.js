@@ -200,17 +200,20 @@ async function executeDiscussionChain(message, mode, searchResults) {
     // STAGE 3: OPENROUTER DELIVERER PIECE
     // ------------------------------------------
     try {
-        console.log(`[Discussion Chain] Stage 3: OpenRouter gathering absolute best delivery via ${modeConfig.openrouter}...`);
+        // FIX: Using highly stable free models via OpenRouter to bypass Venice upstream rate limits
+        const stableOpenRouterModel = "google/gemini-2.5-flash:free"; 
+        
+        console.log(`[Discussion Chain] Stage 3: OpenRouter final delivery via ${stableOpenRouterModel}...`);
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
                 "Authorization": `Bearer ${KEYS.openrouter}`,
-                "HTTP-Referer": "https://joes-ai-server.onrender.com", // Recommended by OpenRouter docs
+                "HTTP-Referer": "https://joes-ai-server.onrender.com",
                 "X-Title": "Joes AI Workspace"
             },
             body: JSON.stringify({
-                model: modeConfig.openrouter,
+                model: stableOpenRouterModel,
                 messages: [
                     { 
                         role: 'system', 
@@ -223,7 +226,7 @@ async function executeDiscussionChain(message, mode, searchResults) {
                                  `Groq analysis: ${groqResponse}\n\n` +
                                  `Gemini augmentation: ${geminiResponse}\n` +
                                  `--- END TRANSCRIPT ---\n\n` +
-                                 `Deliver the final response now.`
+                                 `Deliver the polished final response now.`
                     }
                 ]
             })
@@ -231,7 +234,6 @@ async function executeDiscussionChain(message, mode, searchResults) {
 
         const data = await response.json();
         
-        // Explicitly log OpenRouter errors to your console for visibility if the endpoint blocks you
         if (!response.ok) {
             console.error("[OpenRouter API Error Details]:", data);
             throw new Error(data?.error?.message || `HTTP error! status: ${response.status}`);
@@ -244,7 +246,6 @@ async function executeDiscussionChain(message, mode, searchResults) {
         throw new Error("OpenRouter response body fields missing choices array payload.");
     } catch (err) {
         console.error("Discussion Stage 3 (OpenRouter) Error:", err);
-        // Fallback smoothly onto Gemini's response so your users do not encounter a crash
         console.log("[Discussion Chain Fallback] Serving Gemini response directly due to OpenRouter block.");
         return geminiResponse || groqResponse || "System encounter threshold limitation. Please re-run the thread query.";
     }
@@ -553,7 +554,7 @@ app.post('/api/chat', async (req, res) => {
         // Grab context from recent messages
         let searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || 'General inquiry';
         
-        // Truncate query safely to stay within Tavily's 400-character limit
+        // FIX: Truncate query safely to stay well within Tavily's 400-character limit
         if (searchQuery.length > 300) {
             searchQuery = searchQuery.substring(0, 300) + '...';
         }
