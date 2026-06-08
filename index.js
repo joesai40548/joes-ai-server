@@ -45,7 +45,6 @@ function getSystemPrompt(mode) {
             return `${creatorIdentity} You are CHAT MODE - a friendly, energetic AI companion. Be conversational and warm. Use expressive emojis naturally to enhance emotional tone: 😊 for friendliness, 💡 for ideas, 🎉 for celebration, 🤔 for curiosity, 👋 for greetings, ✨ for excitement. Keep responses lively and interactive. Focus on building rapport.`;
     }
 }
-}
 
 const KEYS = {
     groq: process.env.GROQ_API_KEY,
