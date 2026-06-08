@@ -3,6 +3,8 @@ const cors = require('cors');
 // Use native fetch if available on newer Node.js versions, preventing CommonJS require crashes
 const fetch = globalThis.fetch || require('node-fetch');
 const path = require('path');
+const { google } = require('googleapis');
+const PdfPrinter = require('pdfmake');
 require('dotenv').config();
 
 const app = express();
@@ -11,7 +13,113 @@ app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(cors());
 
-// Root endpoint returns a clean API status instead of searching for a local HTML file
+// --- SERVER-SIDE PDFMAKE FONT CONFIGURATION ---
+// Server-side pdfmake requires localized .ttf font files.
+// Please ensure you have a "fonts" folder at your project root containing these files,
+// or install the 'roboto-fontface' library and map paths accordingly.
+const fonts = {
+    Roboto: {
+        normal: path.join(__dirname, 'fonts/Roboto-Regular.ttf'),
+        bold: path.join(__dirname, 'fonts/Roboto-Medium.ttf'),
+        italics: path.join(__dirname, 'fonts/Roboto-Italic.ttf'),
+        bolditalics: path.join(__dirname, 'fonts/Roboto-MediumItalic.ttf')
+    }
+};
+
+// --- GMAIL OAUTH2 CLIENT INITIALIZATION ---
+const oauth2Client = new google.auth.OAuth2(
+    process.env.GMAIL_CLIENT_ID,
+    process.env.GMAIL_CLIENT_SECRET,
+    process.env.GMAIL_REDIRECT_URI || 'https://developers.google.com/oauthplayground'
+);
+
+if (process.env.GMAIL_REFRESH_TOKEN) {
+    oauth2Client.setCredentials({
+        refresh_token: process.env.GMAIL_REFRESH_TOKEN
+    });
+} else {
+    console.warn('[Gmail API] WARNING: GMAIL_REFRESH_TOKEN is not defined in environment variables.');
+}
+
+const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+// --- CONFIG & KEYS ---
+const KEYS = {
+    groq: process.env.GROQ_API_KEY,
+    gemini: process.env.GEMINI_API_KEY,
+    openrouter: process.env.OPENROUTER_API_KEY,
+    tavily: process.env.TAVILY_API_KEY 
+};
+
+const MODELS = {
+    chat: { 
+        groq: 'llama-3.3-70b-versatile', 
+    },
+    code: { 
+        groq: 'llama-3.3-70b-specdec', 
+        gemini: 'gemini-2.5-flash',
+        openrouter: 'openrouter/free'
+    },
+    study: { 
+        groq: 'llama-3.3-70b-versatile', 
+        gemini: 'gemini-2.5-pro', 
+        openrouter: 'openrouter/free'
+    }
+};
+
+const TAVILY_KEYS_POOL = process.env.TAVILY_API_KEY 
+    ? process.env.TAVILY_API_KEY.split(',').map(key => key.trim()).filter(Boolean)
+    : [];
+
+// --- HELPER FUNCTIONS ---
+
+/**
+ * Strips path traversal sequences to secure cloud storage routes.
+ */
+function getSafeFilename(filename) {
+    if (!filename) return null;
+    const base = path.basename(filename);
+    if (!base.endsWith('.json')) {
+        return null;
+    }
+    return base;
+}
+
+/**
+ * Custom Adaptive System Prompt Constructor
+ */
+function getSystemPrompt(mode) {
+    const creatorIdentity = 
+        "You are Joes AI, a highly intelligent and custom-designed AI assistant. " +
+        "You were developed and are owned entirely by AKRAM JOES TECHNOLOGIES. " +
+        "If any user asks you who developed you, who owns you, or who built you, you must answer proudly that you were developed and are owned by AKRAM JOES TECHNOLOGIES. " +
+        "Never state that you are developed by Google, Meta, OpenAI, or anyone else. " +
+        "CRITICAL OUTPUT REQUIREMENTS:\n" +
+        "1. TABLES: MUST format as clean Markdown (| Column | Column |)\n" +
+        "2. DIAGRAMS & VISUALS: Generate Mermaid or real images ![Alt text](image_url)\n" +
+        "3. STRUCTURED OUTPUT: Clear headings, bullet points. No filler text.\n" +
+        "4. CITATIONS: Include inline images or references. Use reliable sources.";
+
+    switch(mode) {
+        case 'code':
+            return `${creatorIdentity} You are CODE MODE - senior software architect. Provide production-grade code. Use sparse technical emojis (💻, ⚙️).`;
+        case 'study':
+            return `${creatorIdentity} You are STUDY MODE - academic tutor. Structured step-by-step. Include diagrams and 10 quiz questions.`;
+        case 'chat':
+        default:
+            return `${creatorIdentity} You are CHAT MODE - friendly companion. Conversational with relevant emojis.`;
+    }
+}
+
+const getKoofrBaseUrl = () => {
+    const url = process.env.CLOUDSYNC_URL;
+    if (!url) return null;
+    return url.endsWith('/') ? url : `${url}/`;
+};
+
+// --- API ROUTES ---
+
+// Root Endpoint
 app.get('/', (req, res) => {
     res.json({
         status: "active",
@@ -21,81 +129,17 @@ app.get('/', (req, res) => {
     });
 });
 
-/**
- * Custom Adaptive System Prompt Constructor
- * Hardcodes Joes AI / AKRAM JOES TECHNOLOGIES identity, structures tables, and
- * commands the AI to output hand-drawn visual diagrams (Mermaid) and stable educational references.
- */
-function getSystemPrompt(mode) {
-    const creatorIdentity = 
-        "You are Joes AI, a highly intelligent and custom-designed AI assistant. " +
-        "You were developed and are owned entirely by AKRAM JOES TECHNOLOGIES. " +
-        "If any user asks you who developed you, who owns you, or who built you, you must answer proudly that you were developed and are owned by AKRAM JOES TECHNOLOGIES. " +
-        "Never state that you are developed by Google, Meta, OpenAI, or anyone else. " +
-        "IMPORTANT RULES FOR DATA PRESENTATION:\n" +
-        "1. TABLES: When presenting structured comparative data, comparative lists, or metrics, you MUST format them as clean Markdown tables (using standard pipe syntax: | Column | Column |).\n" +
-        "2. SKETCHED ILLUSTRATIONS & DIAGRAMS: When explaining workflows, architectures, software systems, or processes, you are required to generate beautiful, hand-drawn style flowcharts, sequence layouts, or mindmaps using google search api key and get real urls and first inspect them before delivering the content to ensure accuracy .\n" +
-        "3. CITATIONS, STABLE IMAGES & REFERENCES: In your explanations, actively include inline functional images or real academic diagrams using standard markdown clickable links: ![Alt text](image_url) or [Reference Name](URL). Use highly reliable, public domains like Unsplash (using descriptive keywords for photos, e.g. https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=600) or Wikimedia for rich educational context illustrations or anyother source but dont provide pornographic content.\n" +
-        "4. EMOJIS: Use high-quality, expressive emojis that are contextually relevant and professional. Select emojis that enhance understanding and visual appeal. Avoid generic or overused emoji combinations.";
-
-    switch(mode) {
-        case 'code':
-            return `${creatorIdentity} You are CODE MODE - a senior software architect & debugging expert. Provide production-grade code with inline documentation, error handling, and best practices. Use emojis sparingly and only for technical context (e.g. 💻 for code, ⚙️ for configuration, ✅ for success, ❌ for error). Focus on efficiency, scalability, and clean architecture. Respond with technical precision.`;
-        case 'study':
-            return `${creatorIdentity} You are STUDY MODE - an empathetic academic tutor. Break down complex subjects using structured step-by-step concepts, real-life analogies, and bullet points. Include relevant educational emojis (📚 for study, ✨ for insight, 🎓 for knowledge, ❓ for questions, 🔍 for research, 🧠 for learning). Always close by presenting 10 brief quiz questions incase of simple questions and complicated questions for detailed questions. Focus on learning outcomes.`;
-        case 'chat':
-        default:
-            return `${creatorIdentity} You are CHAT MODE - a friendly, energetic AI companion. Be conversational and warm. Use expressive emojis naturally to enhance emotional tone: 😊 for friendliness, 💡 for ideas, 🎉 for celebration, 🤔 for curiosity, 👋 for greetings, ✨ for excitement. Keep responses lively and interactive. Focus on building rapport.`;
-    }
-}
-
-const KEYS = {
-    groq: process.env.GROQ_API_KEY,
-    gemini: process.env.GEMINI_API_KEY,
-    openrouter: process.env.OPENROUTER_API_KEY,
-    google: process.env.GOOGLE_SEARCH_API_KEY,
-    cx: process.env.GOOGLE_SEARCH_ENGINE_ID,
-    tavily: process.env.TAVILY_API_KEY 
-};
-
-// Model Configuration for Multi-System AI Consultation Multi-Tier Discussion
-const MODELS = {
-    chat: { 
-        groq: 'llama-3.3-70b-versatile', 
-        gemini: 'gemini-2.5-flash',
-        openrouter: 'openrouter/free' // Automatically uses any available non-busy free model
-    },
-    code: { 
-        groq: 'llama-3.3-70b-specdec', 
-        gemini: 'gemini-2.5-flash',
-        openrouter: 'openrouter/free' // Automatically uses any available non-busy free model
-    },
-    study: { 
-        groq: 'llama-3.3-70b-versatile', 
-        gemini: 'gemini-2.5-pro', 
-        openrouter: 'openrouter/free' // Automatically uses any available non-busy free model
-    }
-};
-
-// Parse multiple Tavily keys from a comma-separated string, filtering out empty entries
-const TAVILY_KEYS_POOL = process.env.TAVILY_API_KEY 
-    ? process.env.TAVILY_API_KEY.split(',').map(key => key.trim()).filter(Boolean)
-    : [];
-
-// Updated failover search engine utilizing the keys pool
-async function fetchGoogleSearch(query, searchType = 'web', count = 5) {
+// Failover search engine utilizing the keys pool
+async function fetchTavilySearch(query, searchType = 'web', count = 5) {
     if (TAVILY_KEYS_POOL.length === 0) {
         console.warn('[Search Engine] No Tavily API keys detected in configuration.');
         return { query, searchType, count: 0, items: [] };
     }
 
-    // Try every single key inside the pool sequentially until a response succeeds
     for (let i = 0; i < TAVILY_KEYS_POOL.length; i++) {
         const activeKey = TAVILY_KEYS_POOL[i];
-        
         try {
             console.log(`[Search Engine] Trying Tavily API Key index [${i}] (Total Pool: ${TAVILY_KEYS_POOL.length})`);
-            
             const response = await fetch('https://api.tavily.com/search', {
                 method: 'POST',
                 headers: {
@@ -111,7 +155,6 @@ async function fetchGoogleSearch(query, searchType = 'web', count = 5) {
 
             const data = await response.json();
 
-            // If an API key runs out of characters or limits, skip directly to the next key
             if (!response.ok || data.detail?.error) {
                 console.warn(`[Search Engine] Key index [${i}] exhausted or rejected. Details:`, data.detail?.error || data);
                 continue;
@@ -132,80 +175,103 @@ async function fetchGoogleSearch(query, searchType = 'web', count = 5) {
 
         } catch (err) {
             console.error(`[Search Engine] Network exception on Tavily Key index [${i}]:`, err.message);
-            // Fall through to loop next key automatically
         }
     }
 
-    // Safety fallback if all configured keys fail
     console.error('[Search Engine] CRITICAL: All provided Tavily API keys in pool have failed or exhausted limits.');
     return { query, searchType, count: 0, items: [] };
 }
 
 /**
  * DISCUSSION CHAIN LOGIC ENGINE
- * Groq generates primary data -> Gemini reviews & enhances with illustrations -> OpenRouter delivers final result
  */
-async function executeDiscussionChain(message, mode, searchResults) {
+async function executeDiscussionChain(message, mode, searchResults, attachments = []) {
     const systemPrompt = getSystemPrompt(mode);
     const modeConfig = MODELS[mode] || MODELS.chat;
     const contextString = JSON.stringify(searchResults, null, 2);
 
     let groqResponse = "";
     let geminiResponse = "";
+    const hasAttachments = attachments && attachments.length > 0;
 
-    // ------------------------------------------
-    // STAGE 1: GROQ PRIMARY ANALYSIS
-    // ------------------------------------------
-    try {
-        console.log(`[Discussion Chain] Stage 1: Groq thinking via ${modeConfig.groq}...`);
-        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${KEYS.groq}`
-            },
-            body: JSON.stringify({
-                model: modeConfig.groq,
-                messages: [
-                    { role: 'system', content: `${systemPrompt}\n\nWeb Search Reference Content:\n${contextString}` },
-                    { role: 'user', content: `Provide initial evaluation and complete response breakdown for: ${message}` }
-                ]
-            })
-        });
+    if (hasAttachments) {
+        console.log(`[Discussion Chain] Attachments detected. Skipping Groq, proceeding to Gemini for file analysis...`);
+    } else {
+        // STAGE 1: GROQ PRIMARY ANALYSIS
+        try {
+            console.log(`[Discussion Chain] Stage 1: Groq thinking via ${modeConfig.groq}...`);
+            const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${KEYS.groq}`
+                },
+                body: JSON.stringify({
+                    model: modeConfig.groq,
+                    messages: [
+                        { role: 'system', content: `${systemPrompt}\n\nWeb Search Reference Content:\n${contextString}` },
+                        { role: 'user', content: `Provide initial evaluation and complete response breakdown for: ${message}` }
+                    ]
+                })
+            });
 
-        const data = await response.json();
-        groqResponse = data.choices?.[0]?.message?.content || "Groq primary phase was unable to gather raw logic.";
-        console.log("[Discussion Chain] Stage 1 Complete.");
-    } catch (err) {
-        console.error("Discussion Stage 1 (Groq) Error:", err);
-        groqResponse = "Primary logic engine timeout. Proceeding with raw data benchmarks.";
+            const data = await response.json();
+            groqResponse = data.choices?.[0]?.message?.content || "Groq primary phase was unable to gather raw logic.";
+            console.log("[Discussion Chain] Stage 1 Complete.");
+        } catch (err) {
+            console.error("Discussion Stage 1 (Groq) Error:", err);
+            groqResponse = "Primary logic engine timeout. Proceeding with raw data benchmarks.";
+        }
     }
 
-    // ------------------------------------------
     // STAGE 2: GEMINI ANALYSIS & DISCUSSION PASS
-    // ------------------------------------------
     try {
         console.log(`[Discussion Chain] Stage 2: Gemini direct peer discussion via ${modeConfig.gemini}...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modeConfig.gemini}:generateContent?key=${KEYS.gemini}`;
         
-        const contentPayload = [
-            {
-                role: 'user',
-                parts: [{ 
-                    text: `${systemPrompt}\n\n` +
-                          `You are the second engine in a multi-model discussion. Here is the context:\n` +
-                          `User Request: ${message}\n` +
-                          `Tavily Search Results: ${contextString}\n\n` +
-                          `The primary model (Groq) suggested this solution:\n${groqResponse}\n\n` +
-                          `Discuss this response. Enhance it, build on top of it, and apply your advanced features to format tables, integrate visual markdown graphs, or add rich descriptors.`
-                }]
+        const parts = [{ 
+            text: `${systemPrompt}\n\n` +
+                  `You are the second engine in a multi-model discussion. Here is the context:\n` +
+                  `User Request: ${message}\n` +
+                  `Tavily Search Results: ${contextString}\n\n`
+        }];
+
+        if (hasAttachments) {
+            parts.push(`\n\n[ATTACHMENTS DETECTED - ANALYZE THESE FILES]`);
+        }
+
+        const geminiContents = [{
+            role: 'user',
+            parts: [{ 
+                text: parts[0].text
+            }]
+        }];
+
+        attachments.forEach(att => {
+            if (att.fileData && att.mimeType) {
+                geminiContents[0].parts.push({
+                    inline_data: {
+                        mime_type: att.mimeType,
+                        data: att.fileData
+                    }
+                });
             }
-        ];
+        });
+
+        if (hasAttachments) {
+            geminiContents[0].parts.push({
+                text: `\n\nPlease analyze the attached files and incorporate your findings into your response.`
+            });
+        } else {
+            geminiContents[0].parts.push({
+                text: `\n\nThe primary model (Groq) suggested this solution:\n${groqResponse}\n\nDiscuss this response. Enhance it, build on top of it, and apply your advanced features to format tables, integrate visual markdown graphs, or add rich descriptors.`
+            });
+        }
 
         const response = await fetch(geminiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: contentPayload })
+            body: JSON.stringify({ contents: geminiContents })
         });
 
         const data = await response.json();
@@ -213,16 +279,12 @@ async function executeDiscussionChain(message, mode, searchResults) {
         console.log("[Discussion Chain] Stage 2 Complete.");
     } catch (err) {
         console.error("Discussion Stage 2 (Gemini) Error:", err);
-        geminiResponse = `Peer analysis exception occurred. Default fallback on base frame: ${groqResponse}`;
+        geminiResponse = `Peer analysis exception occurred. Default fallback on base frame: ${hasAttachments ? "No Groq analysis (attachments present)" : groqResponse}`;
     }
 
-    // ------------------------------------------
     // STAGE 3: OPENROUTER DELIVERER PIECE
-    // ------------------------------------------
     try {
-        // Read dynamically from your updated MODELS configuration ('openrouter/free')
         const autoFreeRouterModel = modeConfig.openrouter || 'openrouter/free'; 
-        
         console.log(`[Discussion Chain] Stage 3: OpenRouter final delivery via dynamic broker (${autoFreeRouterModel})...`);
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
@@ -243,7 +305,7 @@ async function executeDiscussionChain(message, mode, searchResults) {
                         role: 'user', 
                         content: `User query: ${message}\n\n` +
                                  `--- DISCUSSION ENGINE TRANSCRIPT ---\n` +
-                                 `Groq analysis: ${groqResponse}\n\n` +
+                                 `${hasAttachments ? 'Groq: [SKIPPED - Attachments detected]' : `Groq analysis: ${groqResponse}`}\n\n` +
                                  `Gemini augmentation: ${geminiResponse}\n` +
                                  `--- END TRANSCRIPT ---\n\n` +
                                  `Deliver the polished final response now.`
@@ -267,39 +329,9 @@ async function executeDiscussionChain(message, mode, searchResults) {
     } catch (err) {
         console.error("Discussion Stage 3 (OpenRouter) Error:", err);
         console.log("[Discussion Chain Fallback] Serving Gemini response directly due to OpenRouter block.");
-        return geminiResponse || groqResponse || "System encounter threshold limitation. Please re-run the thread query.";
+        return geminiResponse || "System encounter threshold limitation. Please re-run the thread query.";
     }
 }
-
-async function specialistPass(msg, mode, context) {
-    try {
-        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${KEYS.openrouter}`
-            },
-            body: JSON.stringify({
-                model: MODELS[mode]?.openrouter || 'openrouter/free',
-                messages: [{ role: "user", content: `Review strategy for: ${msg}. Mode context: ${mode}. Additional Data: ${context}` }]
-            })
-        });
-        const data = await response.json();
-        if (data && data.choices && data.choices[0]?.message?.content) {
-            return data.choices[0].message.content;
-        }
-        return "Workspace optimization placeholder layout.";
-    } catch (err) {
-        console.error("Network connection error:", err);
-        return "";
-    }
-}
-
-const getKoofrBaseUrl = () => {
-    const url = process.env.CLOUDSYNC_URL;
-    if (!url) return null;
-    return url.endsWith('/') ? url : `${url}/`;
-};
 
 // -----------------------------------------------------------
 // KOOFR WEBDAV ROUTE: LIST ALL SAVED CHAT SESSIONS
@@ -361,7 +393,11 @@ app.get('/api/chats', async (req, res) => {
 // KOOFR WEBDAV ROUTE: LOAD SPECIFIC CHAT CONTENT
 // -----------------------------------------------------------
 app.get('/api/chats/:filename', async (req, res) => {
-    const { filename } = req.params;
+    const filename = getSafeFilename(req.params.filename);
+    if (!filename) {
+        return res.status(400).json({ error: "Invalid filename format." });
+    }
+
     const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
@@ -438,6 +474,11 @@ app.post('/api/chats/rename', async (req, res) => {
     const password = process.env.CLOUDSYNC_PASSWORD;
     const userId = req.headers['x-user-id'] || 'default';
 
+    const safeOldFilename = getSafeFilename(oldFilename);
+    if (!safeOldFilename) {
+        return res.status(400).json({ error: "Invalid old filename format." });
+    }
+
     if (!baseUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Config Missing: Set CLOUDSYNC variables on Render." });
     }
@@ -447,7 +488,7 @@ app.post('/api/chats/rename', async (req, res) => {
         const newFilename = `JoesAI_Chat_${userId}__${sessionId}__${safeTitle}.json`;
         const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
 
-        const response = await fetch(`${baseUrl}${oldFilename}`, {
+        const response = await fetch(`${baseUrl}${safeOldFilename}`, {
             method: 'MOVE',
             headers: {
                 'Authorization': authHeader,
@@ -470,7 +511,11 @@ app.post('/api/chats/rename', async (req, res) => {
 // KOOFR WEBDAV ROUTE: DELETE CHAT SESSION
 // -----------------------------------------------------------
 app.delete('/api/chats/:filename', async (req, res) => {
-    const { filename } = req.params;
+    const filename = getSafeFilename(req.params.filename);
+    if (!filename) {
+        return res.status(400).json({ error: "Invalid filename format." });
+    }
+
     const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
@@ -494,6 +539,65 @@ app.delete('/api/chats/:filename', async (req, res) => {
     } catch (err) {
         console.error("Koofr deletion failure:", err);
         res.status(500).json({ error: "Failed to delete file on Koofr." });
+    }
+});
+
+// -----------------------------------------------------------
+// PDF EXPORT ROUTE: Generate PDF from chat history
+// -----------------------------------------------------------
+app.get('/api/chats/:filename/pdf', async (req, res) => {
+    const filename = getSafeFilename(req.params.filename);
+    if (!filename) {
+        return res.status(400).json({ error: "Invalid filename format." });
+    }
+
+    const baseUrl = getKoofrBaseUrl();
+    const user = process.env.CLOUDSYNC_USER;
+    const password = process.env.CLOUDSYNC_PASSWORD;
+
+    if (!baseUrl || !user || !password) {
+        return res.status(400).json({ error: "Cloud Sync Config Missing on Render." });
+    }
+
+    try {
+        const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+        const response = await fetch(`${baseUrl}${filename}`, {
+            method: 'GET',
+            headers: { 'Authorization': authHeader }
+        });
+
+        if (!response.ok) {
+            return res.status(response.status).json({ error: "Failed to read file from Koofr." });
+        }
+
+        const chatData = await response.json();
+        const history = chatData.history || [];
+        
+        const docDefinition = {
+            content: [
+                { text: chatData.title || 'Chat Export', fontSize: 20, bold: true, margin: [0, 0, 0, 10] },
+                ...history.flatMap(msg => [
+                    { text: `${msg.role}:`, bold: true, margin: [0, 5, 0, 2] },
+                    { text: msg.content || '', margin: [0, 0, 0, 10] }
+                ])
+            ],
+            defaultStyle: {
+                font: 'Roboto'
+            }
+        };
+
+        const printer = new PdfPrinter(fonts);
+        const pdfDocStream = printer.createPdfKitDocument(docDefinition);
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename.replace('.json', '.pdf')}"`);
+
+        pdfDocStream.pipe(res);
+        pdfDocStream.end();
+
+    } catch (err) {
+        console.error("PDF export failure:", err);
+        res.status(500).json({ error: "Failed to generate PDF.", details: err.message });
     }
 });
 
@@ -565,29 +669,141 @@ app.post('/api/gemini', async (req, res) => {
 });
 
 // -----------------------------------------------------------
+// YOUTUBE SEARCH ROUTE
+// -----------------------------------------------------------
+app.post('/api/youtube/search', async (req, res) => {
+    const { query, maxResults = 5 } = req.body;
+    const API_KEY = process.env.YOUTUBE_API_KEY;
+
+    if (!API_KEY) {
+        return res.status(500).json({ error: 'Server: YOUTUBE_API_KEY is missing on Render settings.' });
+    }
+
+    if (!query || typeof query !== 'string') {
+        return res.status(400).json({ error: 'Search query is required and must be a string.' });
+    }
+
+    try {
+        const encodedQuery = encodeURIComponent(query);
+        const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodedQuery}&type=video&maxResults=${maxResults}&key=${API_KEY}`;
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error('YouTube API Error:', data);
+            return res.status(response.status).json({ 
+                error: data.error?.message || 'YouTube API request failed.' 
+            });
+        }
+
+        const videos = data.items?.map(item => ({
+            title: item.snippet.title,
+            videoId: item.id.videoId,
+            description: item.snippet.description,
+            thumbnail: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.default?.url,
+            channelTitle: item.snippet.channelTitle,
+            url: `https://www.youtube.com/watch?v=${item.id.videoId}`
+        })) || [];
+
+        res.json({
+            query,
+            count: videos.length,
+            videos
+        });
+
+    } catch (err) {
+        console.error('YouTube search handling failed:', err);
+        res.status(500).json({ error: 'YouTube search backend failure' });
+    }
+});
+
+// -----------------------------------------------------------
+// GOOGLE DRIVE ROUTE: List Files
+// -----------------------------------------------------------
+app.get('/api/drive/files', async (req, res) => {
+    const API_KEY = process.env.GOOGLE_DRIVE_API_KEY;
+    if (!API_KEY) {
+        return res.status(500).json({ error: 'Server: GOOGLE_DRIVE_API_KEY is missing.' });
+    }
+    try {
+        const drive = google.drive({ version: 'v3', auth: API_KEY });
+        const response = await drive.files.list({
+            pageSize: 100,
+            fields: 'files(id, name, mimeType, modifiedTime)'
+        });
+        res.json({ files: response.data.files || [] });
+    } catch (err) {
+        console.error('Google Drive error:', err);
+        res.status(500).json({ error: 'Failed to list Drive files.' });
+    }
+});
+
+// -----------------------------------------------------------
+// GMAIL ALERT ROUTE: Send alert email using OAuth2 credentials
+// -----------------------------------------------------------
+app.post('/api/gmail/alert', async (req, res) => {
+    const { to, subject, message } = req.body;
+
+    if (!process.env.GMAIL_CLIENT_ID || !process.env.GMAIL_CLIENT_SECRET || !process.env.GMAIL_REFRESH_TOKEN) {
+        return res.status(500).json({ 
+            error: 'Server: Gmail OAuth client configurations or refresh tokens are missing.' 
+        });
+    }
+
+    if (!to || !subject || !message) {
+        return res.status(400).json({ error: 'Missing to, subject, or message fields.' });
+    }
+
+    try {
+        const rawMessage = [
+            `To: ${to}`,
+            'Content-Type: text/html; charset=utf-8',
+            'MIME-Version: 1.0',
+            `Subject: ${subject}`,
+            '',
+            message
+        ].join('\r\n');
+
+        const encodedMessage = Buffer.from(rawMessage)
+            .toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+
+        await gmail.users.messages.send({
+            userId: 'me',
+            requestBody: { raw: encodedMessage }
+        });
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Gmail alert error:', err);
+        res.status(500).json({ error: 'Failed to send Gmail alert.', details: err.message });
+    }
+});
+
+// -----------------------------------------------------------
 // ADAPTIVE MULTI-MODEL ROUTE (Cascading Discussion Pass)
 // -----------------------------------------------------------
 app.post('/api/chat', async (req, res) => {
     try {
         const { messages, mode } = req.body;
         
-        // Grab context from recent messages
         let searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || 'General inquiry';
+        const hasAttachments = messages?.some(m => m.attachments?.length > 0);
+        const attachments = hasAttachments 
+            ? messages.filter(m => m.attachments?.length > 0).flatMap(m => m.attachments)
+            : [];
         
-        // Truncate query safely to stay within Tavily's 400-character limit
         if (searchQuery.length > 300) {
             searchQuery = searchQuery.substring(0, 300) + '...';
         }
         
         console.log(`[Search] Forwarding truncated query to Tavily (${searchQuery.length} chars)`);
+        const searchResults = await fetchTavilySearch(searchQuery, 'web', 5);
+        const discussionOutput = await executeDiscussionChain(searchQuery, mode, searchResults.items, attachments);
         
-        // Fetch web search context matching details via Tavily
-        const searchResults = await fetchGoogleSearch(searchQuery, 'web', 5);
-        
-        // Push elements down the multi-agent discussion stream loop safely
-        const discussionOutput = await executeDiscussionChain(searchQuery, mode, searchResults.items);
-        
-        // Deliver clean, wrapped layout output matching client requirements
         res.json({ text: discussionOutput });
         
     } catch (error) {
@@ -600,77 +816,6 @@ app.post('/api/check-admin', (req, res) => {
     const { email } = req.body;
     const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
     res.json({ isAdmin: email?.toLowerCase() === ADMIN_EMAIL?.toLowerCase() });
-});
-
-// -----------------------------------------------------------
-// GOOGLE CUSTOM SEARCH ROUTE
-// -----------------------------------------------------------
-app.post('/api/google-search', async (req, res) => {
-    const { query, searchType = 'web', count = 10 } = req.body;
-    const API_KEY = process.env.GOOGLE_SEARCH_API_KEY;
-    const ENGINE_ID = process.env.GOOGLE_SEARCH_ENGINE_ID;
-
-    if (!API_KEY || !ENGINE_ID) {
-        return res.status(500).json({ error: 'Server: Google Search API credentials missing.' });
-    }
-
-    if (!query || typeof query !== 'string') {
-        return res.status(400).json({ error: 'Search query is required and must be a string.' });
-    }
-
-    try {
-        let searchUrl;
-        const encodedQuery = encodeURIComponent(query);
-        const maxResults = Math.min(Math.max(count, 1), 10); 
-
-        if (searchType === 'images') {
-            searchUrl = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${ENGINE_ID}&q=${encodedQuery}&searchType=image&num=${maxResults}`;
-        } else if (searchType === 'files') {
-            searchUrl = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${ENGINE_ID}&q=${encodedQuery} filetype:pdf|doc|docx|ppt|pptx&num=${maxResults}`;
-        } else {
-            searchUrl = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${ENGINE_ID}&q=${encodedQuery}&num=${maxResults}`;
-        }
-
-        const response = await fetch(searchUrl);
-        const data = await response.json();
-
-        if (!response.ok) {
-            console.error('Google Search API Error:', data);
-            return res.status(response.status).json({ 
-                error: data.error?.message || 'Google Search API request failed.' 
-            });
-        }
-
-        const results = {
-            query,
-            searchType,
-            count: data.items?.length || 0,
-            items: data.items?.map(item => ({
-                title: item.title,
-                link: item.link,
-                snippet: item.snippet,
-                displayLink: item.displayLink,
-                image: searchType === 'images' ? {
-                    url: item.link,
-                    thumbnail: item.image?.thumbnailLink,
-                    width: item.image?.width,
-                    height: item.image?.height
-                } : null,
-                file: searchType === 'files' ? {
-                    format: item.mime || 'unknown',
-                    size: item.fileSize || 'unknown'
-                } : null,
-                formattedUrl: item.formattedUrl,
-                pagemap: item.pagemap
-            })) || []
-        };
-
-        res.json(results);
-
-    } catch (err) {
-        console.error('Google Search handling failed:', err);
-        res.status(500).json({ error: 'Google Search backend failure' });
-    }
 });
 
 const PORT = process.env.PORT || 3000;
