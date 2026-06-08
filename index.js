@@ -10,12 +10,14 @@ app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(cors());
 
-// Serve static files from the public directory
-app.use(express.static(path.join(__dirname)));
-
-// Serve the main HTML file
+// Root endpoint returns a clean API status instead of searching for a local HTML file
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+    res.json({
+        status: "active",
+        service: "Joes AI Backend Server",
+        developer: "AKRAM JOES TECHNOLOGIES",
+        frontend_url: "http://joesai.work.gd"
+    });
 });
 
 /**
