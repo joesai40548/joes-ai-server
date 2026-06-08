@@ -321,14 +321,16 @@ async function executeDiscussionChain(message, mode, searchResults, attachments 
             throw new Error(data?.error?.message || `HTTP error! status: ${response.status}`);
         }
 
-        if (data && data.choices && data.choices[0]?.message?.content) {
+        // CRASH-FIX SAFETY BARRIER: Check if choices exists before accessing indexing properties
+        if (data && data.choices && Array.isArray(data.choices) && data.choices.length > 0 && data.choices[0]?.message?.content) {
             console.log("[Discussion Chain] Stage 3 Complete. Final delivery ready via dynamic broker.");
             return data.choices[0].message.content;
         }
+        
         throw new Error("OpenRouter response body fields missing choices array payload.");
     } catch (err) {
         console.error("Discussion Stage 3 (OpenRouter) Error:", err);
-        console.log("[Discussion Chain Fallback] Serving Gemini response directly due to OpenRouter block.");
+        console.log("[Discussion Chain Fallback] Serving Gemini response directly due to OpenRouter block or bad signature.");
         return geminiResponse || "System encounter threshold limitation. Please re-run the thread query.";
     }
 }
