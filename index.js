@@ -18,7 +18,28 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ limit: '500mb', extended: true }));
-app.use(cors({ origin: process.env.FRONTEND_URL || true }));
+
+const allowedOrigins = [
+    process.env.FRONTEND_URL,
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://joesai.work.gd',
+    'https://joesai.work.gd'
+].filter(Boolean);
+
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        callback(new Error(`CORS policy blocked origin: ${origin}`));
+    }
+}));
+
+// Logging middleware for debugging
+app.use((req, res, next) => {
+    console.log(`${req.method} ${req.path}`);
+    next();
+});
 
 // 1. Serve static files cleanly from your root directory
 app.use(express.static(PUBLIC_DIR, { index: 'index.html' }));
@@ -321,6 +342,8 @@ app.get('/api/search', async (req, res) => {
     const data = await fetchGoogleGrounding(req.query.q);
     res.json(data);
 });
+
+console.log('API routes registered: /api/chat, /api/chat/stream, /api/config, /api/check-admin, /api/search, /api/chats');
 
 app.get('/api/chats', async (req, res) => {
     const baseUrl = getKoofrBaseUrl();
