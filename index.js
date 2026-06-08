@@ -9,7 +9,9 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const rateLimit = require('express-rate-limit');
+const path = require('path');
 
+const PUBLIC_DIR = path.resolve(__dirname);
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "kaigwaakram123@gmail.com";
 
 const app = express();
@@ -17,6 +19,9 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ limit: '500mb', extended: true }));
 app.use(cors({ origin: process.env.FRONTEND_URL || true }));
+
+// 1. Serve static files cleanly from your root directory
+app.use(express.static(PUBLIC_DIR, { index: 'index.html' }));
 
 const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 100 });
 app.use('/api/', limiter);
@@ -458,6 +463,11 @@ app.delete('/api/chats/:filename', async (req, res) => {
         console.error("Koofr deletion failure:", err);
         res.status(500).json({ error: "Failed to delete file on Koofr." });
     }
+});
+
+// 2. Clear fallback route for root URL if index.html is missing in the directory
+app.get('/', (req, res) => {
+    res.send('JOES AI Core API Status: Active and Running!');
 });
 
 const PORT = process.env.PORT || 3000;
