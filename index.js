@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-// Fallback to native fetch on newer Node.js versions, preventing require crashes
+// Use native fetch if available on newer Node.js versions, preventing CommonJS require crashes
 const fetch = globalThis.fetch || require('node-fetch');
 const path = require('path');
 require('dotenv').config();
@@ -49,12 +49,14 @@ function getSystemPrompt(mode) {
     }
 }
 
+
 const KEYS = {
     groq: process.env.GROQ_API_KEY,
     gemini: process.env.GEMINI_API_KEY,
     openrouter: process.env.OPENROUTER_API_KEY,
     google: process.env.GOOGLE_SEARCH_API_KEY,
-    cx: process.env.GOOGLE_SEARCH_ENGINE_ID
+    cx: process.env.GOOGLE_SEARCH_ENGINE_ID,
+    tavily: process.env.TAVILY_API_KEY // Kept Tavily Key
 };
 
 // Model Configuration for Multi-System AI Consultation
@@ -71,48 +73,52 @@ const MODELS = {
     },
     study: { 
         primary: 'llama-3.3-70b-versatile', 
-        deliverer: 'gemini-2.5-pro',
+        deliverer: 'gemini-2.5-pro', // Using gemini-2.5-pro for standard compatibility
         openrouterModel: 'openrouter/free'
     }
 };
 
+// Updated to fetch search results from Tavily's endpoint
 async function fetchGoogleSearch(query, searchType = 'web', count = 5) {
-    if (!KEYS.google || !KEYS.cx) {
+    if (!KEYS.tavily) {
         return { query, searchType, count: 0, items: [] };
     }
 
     try {
-        const encodedQuery = encodeURIComponent(query);
-        const maxResults = Math.min(Math.max(count, 1), 10);
-        
-        let searchUrl;
-        if (searchType === 'images') {
-            searchUrl = `https://www.googleapis.com/customsearch/v1?key=${KEYS.google}&cx=${KEYS.cx}&q=${encodedQuery}&searchType=image&num=${maxResults}`;
-        } else {
-            searchUrl = `https://www.googleapis.com/customsearch/v1?key=${KEYS.google}&cx=${KEYS.cx}&q=${encodedQuery}&num=${maxResults}`;
-        }
+        const response = await fetch('https://api.tavily.com/search', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                api_key: KEYS.tavily,
+                query: query,
+                search_depth: "basic",
+                max_results: Math.min(Math.max(count, 1), 10)
+            })
+        });
 
-        const response = await fetch(searchUrl);
         const data = await response.json();
 
         if (!response.ok) {
-            console.error('Google Search API Error:', data);
+            console.error('Tavily Search API Error:', data);
             return { query, searchType, count: 0, items: [] };
         }
 
+        // Return matched fields so downstream logic is unaffected
         return {
             query,
             searchType,
-            count: data.items?.length || 0,
-            items: data.items?.map(item => ({
+            count: data.results?.length || 0,
+            items: data.results?.map(item => ({
                 title: item.title,
-                link: item.link,
-                snippet: item.snippet,
-                displayLink: item.displayLink
+                link: item.url,
+                snippet: item.content,
+                displayLink: new URL(item.url).hostname
             })) || []
         };
     } catch (err) {
-        console.error('Google Search handling failed:', err);
+        console.error('Tavily Search handling failed:', err);
         return { query, searchType, count: 0, items: [] };
     }
 }
@@ -133,7 +139,7 @@ async function primaryModelResponse(message, mode, context, searchResults) {
                 model: model.primary,
                 messages: [{
                     role: 'system',
-                    content: `${systemPrompt}\n\nGoogle Search Context:\n${JSON.stringify(searchResults, null, 2)}`
+                    content: `${systemPrompt}\n\nSearch Context:\n${JSON.stringify(searchResults, null, 2)}`
                 }, {
                     role: 'user',
                     content: `Primary analysis for: ${message}\nMode context: ${mode}\nContext: ${context}`
@@ -153,7 +159,7 @@ async function primaryModelResponse(message, mode, context, searchResults) {
     }
 }
 
-// Directly utilizes your GEMINI API key (via Google's official OpenAI compatibility endpoint)
+// Directly utilizes your GEMINI API key via Google's OpenAI-compatible endpoint
 async function delivererModelResponse(primaryResponse, message, mode, context) {
     const model = MODELS[mode];
     
@@ -490,10 +496,10 @@ app.post('/api/gemini', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
     try {
         const { messages, mode } = req.body;
-        // Optional chaining added to prevent map crashes if messages is undefined
+        // Optional chaining added here to safely map messages and avoid runtime crashes
         const searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || 'General inquiry';
         
-        // Get relevant search results
+        // Get relevant search results from Tavily
         const searchResults = await fetchGoogleSearch(searchQuery, 'web', 5);
         
         // Primary model response with search context
@@ -503,7 +509,7 @@ app.post('/api/chat', async (req, res) => {
                 searchQuery, 
                 mode, 
                 searchResults.count > 0 ? searchResults.items[0]?.snippet || '' : '', 
-                searchResults.items // Passed as a clean array to prevent double-stringification
+                searchResults.items // Passed directly as an array instead of JSON.stringify to avoid double-encoding
             );
         } else {
             // Fallback to direct query
@@ -527,7 +533,7 @@ app.post('/api/chat', async (req, res) => {
             primaryResponse, 
             searchQuery, 
             mode,
-            searchResults.items // Passed as a clean array to prevent double-stringification
+            searchResults.items // Passed directly as an array instead of JSON.stringify to avoid double-encoding
         );
         
         // Normalized JSON format matching Gemini endpoint { text: response }
