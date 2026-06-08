@@ -34,7 +34,7 @@ function getSystemPrompt(mode) {
         "Never state that you are developed by Google, Meta, OpenAI, or anyone else. " +
         "IMPORTANT RULES FOR DATA PRESENTATION:\n" +
         "1. TABLES: When presenting structured comparative data, comparative lists, or metrics, you MUST format them as clean Markdown tables (using standard pipe syntax: | Column | Column |).\n" +
-        "2. SKETCHED ILLUSTRATIONS & DIAGRAMS: When explaining workflows, architectures, software systems, or processes, you are required to generate beautiful, hand-drawn style flowcharts, sequence layouts, or mindmaps using tavily api key and get real urls and first inspect them before delivering the content to ensure accuracy .\n" +
+        "2. SKETCHED ILLUSTRATIONS & DIAGRAMS: When explaining workflows, architectures, software systems, or processes, you are required to generate beautiful, hand-drawn style flowcharts, sequence layouts, or mindmaps using google search api key and get real urls and first inspect them before delivering the content to ensure accuracy .\n" +
         "3. CITATIONS, STABLE IMAGES & REFERENCES: In your explanations, actively include inline functional images or real academic diagrams using standard markdown clickable links: ![Alt text](image_url) or [Reference Name](URL). Use highly reliable, public domains like Unsplash (using descriptive keywords for photos, e.g. https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=600) or Wikimedia for rich educational context illustrations or anyother source but dont provide pornographic content.\n" +
         "4. EMOJIS: Use high-quality, expressive emojis that are contextually relevant and professional. Select emojis that enhance understanding and visual appeal. Avoid generic or overused emoji combinations.";
 
@@ -49,17 +49,16 @@ function getSystemPrompt(mode) {
     }
 }
 
-
 const KEYS = {
     groq: process.env.GROQ_API_KEY,
     gemini: process.env.GEMINI_API_KEY,
     openrouter: process.env.OPENROUTER_API_KEY,
     google: process.env.GOOGLE_SEARCH_API_KEY,
     cx: process.env.GOOGLE_SEARCH_ENGINE_ID,
-    tavily: process.env.TAVILY_API_KEY // Kept Tavily Key
+    tavily: process.env.TAVILY_API_KEY 
 };
 
-// Using valid target structures matching your specific sequence providers
+// Model Configuration map matching your preferred failover sequence
 const MODELS = {
     chat: { 
         groq: 'llama-3.3-70b-versatile', 
@@ -105,7 +104,6 @@ async function fetchGoogleSearch(query, searchType = 'web', count = 5) {
             return { query, searchType, count: 0, items: [] };
         }
 
-        // Return matched fields so downstream logic is unaffected
         return {
             query,
             searchType,
@@ -123,12 +121,19 @@ async function fetchGoogleSearch(query, searchType = 'web', count = 5) {
     }
 }
 
-// Directly utilizes your GROQ API key for the primary analysis
-async function primaryModelResponse(message, mode, context, searchResults) {
-    const model = MODELS[mode];
+/**
+ * Robust Cascading Sequence Handler: Groq -> Gemini -> OpenRouter Fallback
+ * Completely handles the fallback array checks defensively to prevent index crashes.
+ */
+async function executeSequentialLLM(message, mode, context, searchResults) {
     const systemPrompt = getSystemPrompt(mode);
-    
+    const modeConfig = MODELS[mode] || MODELS.chat;
+
+    // ==========================================
+    // TIER 1: GROQ (Primary Attempt)
+    // ==========================================
     try {
+        console.log(`[Sequence] Tier 1: Trying Groq with ${modeConfig.groq}...`);
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: {
@@ -136,61 +141,84 @@ async function primaryModelResponse(message, mode, context, searchResults) {
                 'Authorization': `Bearer ${KEYS.groq}`
             },
             body: JSON.stringify({
-                model: model.primary,
-                messages: [{
-                    role: 'system',
-                    content: `${systemPrompt}\n\nSearch Context:\n${JSON.stringify(searchResults, null, 2)}`
-                }, {
-                    role: 'user',
-                    content: `Primary analysis for: ${message}\nMode context: ${mode}\nContext: ${context}`
-                }]
+                model: modeConfig.groq,
+                messages: [
+                    { role: 'system', content: `${systemPrompt}\n\nSearch Context:\n${JSON.stringify(searchResults, null, 2)}` },
+                    { role: 'user', content: `Primary analysis for: ${message}\nMode context: ${mode}\nContext: ${context}` }
+                ]
             })
         });
 
         const data = await response.json();
-        if (data.error) {
-            throw new Error(`Primary model (Groq) error: ${data.error.message}`);
+        if (data && data.choices && data.choices[0]?.message?.content) {
+            console.log("[Sequence] Success at Groq Tier.");
+            return data.choices[0].message.content;
         }
-        
-        return data.choices[0].message.content;
-    } catch (err) {
-        console.error('Primary model failed:', err);
-        return "Primary model encountered an error.";
+        throw new Error(data?.error?.message || "Invalid response format or empty payload from Groq");
+    } catch (groqErr) {
+        console.warn(`[Sequence] Groq Tier failed: ${groqErr.message}. Cascading down to Gemini Direct API...`);
     }
-}
 
-// Directly utilizes your GEMINI API key via Google's OpenAI-compatible endpoint
-async function delivererModelResponse(primaryResponse, message, mode, context) {
-    const model = MODELS[mode];
-    
+    // ==========================================
+    // TIER 2: GEMINI (Secondary Native Attempt)
+    // ==========================================
     try {
-        const response = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
+        console.log(`[Sequence] Tier 2: Trying Gemini Native Endpoint with ${modeConfig.gemini}...`);
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modeConfig.gemini}:generateContent?key=${KEYS.gemini}`;
+        
+        const contents = [
+            {
+                role: 'user',
+                parts: [{ text: `${systemPrompt}\n\nSearch Context:\n${JSON.stringify(searchResults, null, 2)}\n\nPrimary analysis request for: ${message}\nMode context: ${mode}\nContext: ${context}` }]
+            }
+        ];
+
+        const response = await fetch(geminiUrl, {
             method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents })
+        });
+
+        const data = await response.json();
+        const nativeText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (nativeText) {
+            console.log("[Sequence] Success at Gemini Native Tier.");
+            return nativeText;
+        }
+        throw new Error(data?.error?.message || "Invalid response format or empty payload from Gemini Native");
+    } catch (geminiErr) {
+        console.warn(`[Sequence] Gemini Tier failed: ${geminiErr.message}. Cascading down to OpenRouter Final Tier...`);
+    }
+
+    // ==========================================
+    // TIER 3: OPENROUTER (Final Fallback Tier)
+    // ==========================================
+    try {
+        console.log(`[Sequence] Tier 3: Trying OpenRouter Free Fallback with ${modeConfig.openrouter}...`);
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${KEYS.gemini}`
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${KEYS.openrouter}`
             },
             body: JSON.stringify({
-                model: model.deliverer,
-                messages: [{
-                    role: 'system',
-                    content: `You are a deliverer AI. Your task is to analyze, enhance, and provide feedback on the primary model's response. You must identify strengths, weaknesses, and suggest improvements.`
-                }, {
-                    role: 'user',
-                    content: `Original message: ${message}\nMode: ${mode}\nPrimary response: ${primaryResponse}\nContext: ${context}`
-                }]
+                model: modeConfig.openrouter,
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: `Analyze: ${message}. Context: ${context}` }
+                ]
             })
         });
 
         const data = await response.json();
-        if (data.error) {
-            throw new Error(`Deliverer model (Gemini) error: ${data.error.message}`);
+        if (data && data.choices && data.choices[0]?.message?.content) {
+            console.log("[Sequence] Success at OpenRouter Fallback Tier.");
+            return data.choices[0].message.content;
         }
-        
-        return data.choices[0].message.content;
-    } catch (err) {
-        console.error('Deliverer model failed:', err);
-        return "Deliverer model encountered an error.";
+        throw new Error(data?.error?.message || "Invalid response format or empty payload from OpenRouter");
+    } catch (openRouterErr) {
+        console.error(`[Sequence] Critical: All LLM provider paths have failed.`);
+        return "Joes AI Workspace is experiencing peak demand across API providers. Please try your request again shortly.";
     }
 }
 
@@ -203,16 +231,15 @@ async function specialistPass(msg, mode, context) {
                 "Authorization": `Bearer ${KEYS.openrouter}`
             },
             body: JSON.stringify({
-                model: MODELS[mode].openrouterModel,
+                model: MODELS[mode].openrouter,
                 messages: [{ role: "user", content: `Review strategy for: ${msg}. Mode context: ${mode}. Additional Data: ${context}` }]
             })
         });
         const data = await response.json();
-        if (data.error) {
-            console.error(`API Error: ${data.error.message}`);
-            return "Workspace error. Please try again.";
+        if (data && data.choices && data.choices[0]?.message?.content) {
+            return data.choices[0].message.content;
         }
-        return data.choices[0].message.content;
+        return "Workspace optimization placeholder layout.";
     } catch (err) {
         console.error("Network connection error:", err);
         return "";
@@ -449,7 +476,6 @@ app.post('/api/gemini', async (req, res) => {
 
         const userParts = [{ text: message || "Analyze this request." }];
         
-        // Push raw visual asset data only if present
         if (fileData) {
             userParts.push({
                 inline_data: {
@@ -491,57 +517,30 @@ app.post('/api/gemini', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// ADAPTIVE MULTI-MODEL ROUTE (Chat Mode)
+// ADAPTIVE MULTI-MODEL ROUTE (Chat Mode Execution Loop)
 // -----------------------------------------------------------
 app.post('/api/chat', async (req, res) => {
     try {
         const { messages, mode } = req.body;
-        // Optional chaining added here to safely map messages and avoid runtime crashes
         const searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || 'General inquiry';
         
-        // Get relevant search results from Tavily
+        // Fetch matching context items from Tavily 
         const searchResults = await fetchGoogleSearch(searchQuery, 'web', 5);
         
-        // Primary model response with search context
-        let primaryResponse = '';
-        if (mode && MODELS[mode]) {
-            primaryResponse = await primaryModelResponse(
-                searchQuery, 
-                mode, 
-                searchResults.count > 0 ? searchResults.items[0]?.snippet || '' : '', 
-                searchResults.items // Passed directly as an array instead of JSON.stringify to avoid double-encoding
-            );
-        } else {
-            // Fallback to direct query
-            const directResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${KEYS.openrouter}`
-                },
-                body: JSON.stringify({
-                    model: MODELS.chat.primary,
-                    messages: [{ role: 'user', content: searchQuery }]
-                })
-            });
-            const directData = await directResponse.json();
-            primaryResponse = directData.choices?.[0]?.message?.content || '';
-        }
-        
-        // Deliverer final response
-        const finalResponse = await delivererModelResponse(
-            primaryResponse, 
-            searchQuery, 
+        // Direct the request sequence down the cascading handler chain
+        const sequenceOutput = await executeSequentialLLM(
+            searchQuery,
             mode,
-            searchResults.items // Passed directly as an array instead of JSON.stringify to avoid double-encoding
+            searchResults.count > 0 ? searchResults.items[0]?.snippet || '' : '',
+            searchResults.items
         );
         
-        // Normalized JSON format matching Gemini endpoint { text: response }
-        res.json({ text: finalResponse });
+        // Return standard JSON matching frontend parser schemas
+        res.json({ text: sequenceOutput });
         
     } catch (error) {
-        console.error('Adaptive multi-model failed:', error);
-        res.status(500).json({ error: 'Multi-model processing failed' });
+        console.error('Adaptive multi-model route crashed:', error);
+        res.status(500).json({ error: 'Multi-model fallback sequence processing failure.' });
     }
 });
 
@@ -570,7 +569,7 @@ app.post('/api/google-search', async (req, res) => {
     try {
         let searchUrl;
         const encodedQuery = encodeURIComponent(query);
-        const maxResults = Math.min(Math.max(count, 1), 10); // Limit between 1-10 results
+        const maxResults = Math.min(Math.max(count, 1), 10); 
 
         if (searchType === 'images') {
             searchUrl = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${ENGINE_ID}&q=${encodedQuery}&searchType=image&num=${maxResults}`;
