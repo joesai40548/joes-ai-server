@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch');
+// Fallback to native fetch on newer Node.js versions, preventing require crashes
+const fetch = globalThis.fetch || require('node-fetch');
 const path = require('path');
 require('dotenv').config();
 
@@ -48,7 +49,6 @@ function getSystemPrompt(mode) {
     }
 }
 
-
 const KEYS = {
     groq: process.env.GROQ_API_KEY,
     gemini: process.env.GEMINI_API_KEY,
@@ -71,7 +71,7 @@ const MODELS = {
     },
     study: { 
         primary: 'llama-3.3-70b-versatile', 
-        deliverer: 'gemini-2.5-pro-latest',
+        deliverer: 'gemini-2.5-pro',
         openrouterModel: 'openrouter/free'
     }
 };
@@ -117,16 +117,17 @@ async function fetchGoogleSearch(query, searchType = 'web', count = 5) {
     }
 }
 
+// Directly utilizes your GROQ API key for the primary analysis
 async function primaryModelResponse(message, mode, context, searchResults) {
     const model = MODELS[mode];
     const systemPrompt = getSystemPrompt(mode);
     
     try {
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${KEYS.openrouter}`
+                'Authorization': `Bearer ${KEYS.groq}`
             },
             body: JSON.stringify({
                 model: model.primary,
@@ -142,7 +143,7 @@ async function primaryModelResponse(message, mode, context, searchResults) {
 
         const data = await response.json();
         if (data.error) {
-            throw new Error(`Primary model error: ${data.error.message}`);
+            throw new Error(`Primary model (Groq) error: ${data.error.message}`);
         }
         
         return data.choices[0].message.content;
@@ -152,15 +153,16 @@ async function primaryModelResponse(message, mode, context, searchResults) {
     }
 }
 
+// Directly utilizes your GEMINI API key (via Google's official OpenAI compatibility endpoint)
 async function delivererModelResponse(primaryResponse, message, mode, context) {
     const model = MODELS[mode];
     
     try {
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        const response = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${KEYS.openrouter}`
+                'Authorization': `Bearer ${KEYS.gemini}`
             },
             body: JSON.stringify({
                 model: model.deliverer,
@@ -176,7 +178,7 @@ async function delivererModelResponse(primaryResponse, message, mode, context) {
 
         const data = await response.json();
         if (data.error) {
-            throw new Error(`Deliverer model error: ${data.error.message}`);
+            throw new Error(`Deliverer model (Gemini) error: ${data.error.message}`);
         }
         
         return data.choices[0].message.content;
@@ -488,7 +490,8 @@ app.post('/api/gemini', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
     try {
         const { messages, mode } = req.body;
-        const searchQuery = messages?.slice(-6).map(m => m.content).join(' ') || 'General inquiry';
+        // Optional chaining added to prevent map crashes if messages is undefined
+        const searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || 'General inquiry';
         
         // Get relevant search results
         const searchResults = await fetchGoogleSearch(searchQuery, 'web', 5);
@@ -500,7 +503,7 @@ app.post('/api/chat', async (req, res) => {
                 searchQuery, 
                 mode, 
                 searchResults.count > 0 ? searchResults.items[0]?.snippet || '' : '', 
-                JSON.stringify(searchResults.items)
+                searchResults.items // Passed as a clean array to prevent double-stringification
             );
         } else {
             // Fallback to direct query
@@ -524,10 +527,10 @@ app.post('/api/chat', async (req, res) => {
             primaryResponse, 
             searchQuery, 
             mode,
-            JSON.stringify(searchResults.items)
+            searchResults.items // Passed as a clean array to prevent double-stringification
         );
         
-        // Normalized JSON format exactly matching Gemini endpoint { text: response }
+        // Normalized JSON format matching Gemini endpoint { text: response }
         res.json({ text: finalResponse });
         
     } catch (error) {
