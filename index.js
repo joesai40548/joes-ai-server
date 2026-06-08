@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -9,7 +10,13 @@ app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(cors());
 
-app.get('/', (req, res) => res.send('Joes AI Backend Status: Online and Configured.'));
+// Serve static files from the public directory
+app.use(express.static(path.join(__dirname)));
+
+// Serve the main HTML file
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 /**
  * Custom Adaptive System Prompt Constructor
@@ -24,20 +31,181 @@ function getSystemPrompt(mode) {
         "Never state that you are developed by Google, Meta, OpenAI, or anyone else. " +
         "IMPORTANT RULES FOR DATA PRESENTATION:\n" +
         "1. TABLES: When presenting structured comparative data, comparative lists, or metrics, you MUST format them as clean Markdown tables (using standard pipe syntax: | Column | Column |).\n" +
-        "2. SKETCHED ILLUSTRATIONS & DIAGRAMS: When explaining workflows, architectures, software systems, or processes, you are required to generate beautiful, hand-drawn style flowcharts, sequence layouts, or mindmaps using Mermaid.js syntax inside a code block marked with 'mermaid' (e.g. ```mermaid\\n graph TD;\\n A-->B;\\n```).\n" +
-        "3. CITATIONS, STABLE IMAGES & REFERENCES: In your explanations, actively include inline functional images or real academic diagrams using standard markdown links: ![Alt text](image_url) or [Reference Name](URL). Use highly reliable, public domains like Unsplash (using descriptive keywords for photos, e.g. https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=600) or Wikimedia for rich educational context illustrations.\n" +
-        "4. EMOJIS: Naturally incorporate high-quality, expressive emojis only where contextually helpful and appropriate. Keep usage professional, balanced, and tasteful.";
+        "2. SKETCHED ILLUSTRATIONS & DIAGRAMS: When explaining workflows, architectures, software systems, or processes, you are required to generate beautiful, hand-drawn style flowcharts, sequence layouts, or mindmaps using Mermaid.js syntax inside a code block marked with 'mermaid' (e.g. ```mermaid\\n graph TD;\\n A-->B;\\n```)).\n" +
+        "3. CITATIONS, STABLE IMAGES & REFERENCES: In your explanations, actively include inline functional images or real academic diagrams using standard markdown links: ![Alt text](image_url) or [Reference Name](URL). Use highly reliable, public domains like Unsplash (using descriptive keywords for photos, e.g. https://images.unsplash.com/photo-1576091160550-2173dba999ef?q=80&w=600) or Wikimedia for rich educational context illustrations or anyother source but dont provide pornographic content.\n" +
+        "4. EMOJIS: Use high-quality, expressive emojis that are contextually relevant and professional. Select emojis that enhance understanding and visual appeal. Avoid generic or overused emoji combinations.";
 
     switch(mode) {
         case 'code':
-            return `${creatorIdentity} You are currently operating in CODE MODE. Act as a senior programmer. Provide highly-optimized, production-ready, clean, and properly structured programming source code. Add descriptive inline comments. Minimize unrelated conversational chatter. Use emojis extremely rarely here.`;
-        case 'learn':
-            return `${creatorIdentity} You are currently operating in LEARN MODE. Act as an academic guide and expert advisor. Provide deeply educational, clear explanations for concepts, answer multiple-choice questions by showing the exact logical reasoning step-by-step, and break down complex ideas using helpful terminology.`;
+            return `${creatorIdentity} You are CODE MODE - a senior software architect & debugging expert. Provide production-grade code with inline documentation, error handling, and best practices. Use emojis sparingly and only for technical context (e.g. 💻 for code, ⚙️ for configuration, ✅ for success, ❌ for error). Focus on efficiency, scalability, and clean architecture. Respond with technical precision.`;
         case 'study':
-            return `${creatorIdentity} You are currently operating in STUDY MODE. Act as an empathetic academic tutor. Break down complex subjects using structured step-by-step concepts, real-life analogies, and bullet points. Always close by presenting 2 brief quiz questions.`;
+            return `${creatorIdentity} You are STUDY MODE - an empathetic academic tutor. Break down complex subjects using structured step-by-step concepts, real-life analogies, and bullet points. Include relevant educational emojis (📚 for study, ✨ for insight, 🎓 for knowledge, ❓ for questions, 🔍 for research, 🧠 for learning). Always close by presenting 10 brief quiz questions incase of simple questions and complicated questions for detailed questions. Focus on learning outcomes.`;
         case 'chat':
         default:
-            return `${creatorIdentity} You are currently operating in CHAT MODE. Be friendly, energetic, and engaging. Keep responses conversational, and use expressive emojis naturally and selectively where appropriate.`;
+            return `${creatorIdentity} You are CHAT MODE - a friendly, energetic AI companion. Be conversational and warm. Use expressive emojis naturally to enhance emotional tone: 😊 for friendliness, 💡 for ideas, 🎉 for celebration, 🤔 for curiosity, 👋 for greetings, ✨ for excitement. Keep responses lively and interactive. Focus on building rapport.`;
+    }
+}
+}
+
+const KEYS = {
+    groq: process.env.GROQ_API_KEY,
+    gemini: process.env.GEMINI_API_KEY,
+    openrouter: process.env.OPENROUTER_API_KEY,
+    google: process.env.GOOGLE_SEARCH_API_KEY,
+    cx: process.env.GOOGLE_SEARCH_ENGINE_ID
+};
+
+// Model Configuration for Multi-System AI Consultation
+const MODELS = {
+    chat: { 
+        primary: 'llama-3.3-70b-versatile', 
+        deliverer: 'gemini-2.0-flash-lite',
+        openrouterModel: 'openrouter/free'
+    },
+    code: { 
+        primary: 'llama-3.3-70b-specdec', 
+        deliverer: 'gemini-2.0-flash',
+        openrouterModel: 'openrouter/free'
+    },
+    study: { 
+        primary: 'llama-3.3-70b-versatile', 
+        deliverer: 'gemini-2.5-pro-latest',
+        openrouterModel: 'openrouter/free'
+    }
+};
+
+async function fetchGoogleSearch(query, searchType = 'web', count = 5) {
+    if (!KEYS.google || !KEYS.cx) {
+        return { query, searchType, count: 0, items: [] };
+    }
+
+    try {
+        const encodedQuery = encodeURIComponent(query);
+        const maxResults = Math.min(Math.max(count, 1), 10);
+        
+        let searchUrl;
+        if (searchType === 'images') {
+            searchUrl = `https://www.googleapis.com/customsearch/v1?key=${KEYS.google}&cx=${KEYS.cx}&q=${encodedQuery}&searchType=image&num=${maxResults}`;
+        } else {
+            searchUrl = `https://www.googleapis.com/customsearch/v1?key=${KEYS.google}&cx=${KEYS.cx}&q=${encodedQuery}&num=${maxResults}`;
+        }
+
+        const response = await fetch(searchUrl);
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error('Google Search API Error:', data);
+            return { query, searchType, count: 0, items: [] };
+        }
+
+        return {
+            query,
+            searchType,
+            count: data.items?.length || 0,
+            items: data.items?.map(item => ({
+                title: item.title,
+                link: item.link,
+                snippet: item.snippet,
+                displayLink: item.displayLink
+            })) || []
+        };
+    } catch (err) {
+        console.error('Google Search handling failed:', err);
+        return { query, searchType, count: 0, items: [] };
+    }
+}
+
+async function primaryModelResponse(message, mode, context, searchResults) {
+    const model = MODELS[mode];
+    const systemPrompt = getSystemPrompt(mode);
+    
+    try {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${KEYS.openrouter}`
+            },
+            body: JSON.stringify({
+                model: model.primary,
+                messages: [{
+                    role: 'system',
+                    content: `${systemPrompt}\n\nGoogle Search Context:\n${JSON.stringify(searchResults, null, 2)}`
+                }, {
+                    role: 'user',
+                    content: `Primary analysis for: ${message}\nMode context: ${mode}\nContext: ${context}`
+                }]
+            })
+        });
+
+        const data = await response.json();
+        if (data.error) {
+            throw new Error(`Primary model error: ${data.error.message}`);
+        }
+        
+        return data.choices[0].message.content;
+    } catch (err) {
+        console.error('Primary model failed:', err);
+        return "Primary model encountered an error.";
+    }
+}
+
+async function delivererModelResponse(primaryResponse, message, mode, context) {
+    const model = MODELS[mode];
+    
+    try {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${KEYS.openrouter}`
+            },
+            body: JSON.stringify({
+                model: model.deliverer,
+                messages: [{
+                    role: 'system',
+                    content: `You are a deliverer AI. Your task is to analyze, enhance, and provide feedback on the primary model's response. You must identify strengths, weaknesses, and suggest improvements.`
+                }, {
+                    role: 'user',
+                    content: `Original message: ${message}\nMode: ${mode}\nPrimary response: ${primaryResponse}\nContext: ${context}`
+                }]
+            })
+        });
+
+        const data = await response.json();
+        if (data.error) {
+            throw new Error(`Deliverer model error: ${data.error.message}`);
+        }
+        
+        return data.choices[0].message.content;
+    } catch (err) {
+        console.error('Deliverer model failed:', err);
+        return "Deliverer model encountered an error.";
+    }
+}
+
+async function specialistPass(msg, mode, context) {
+    try {
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${KEYS.openrouter}`
+            },
+            body: JSON.stringify({
+                model: MODELS[mode].openrouterModel,
+                messages: [{ role: "user", content: `Review strategy for: ${msg}. Mode context: ${mode}. Additional Data: ${context}` }]
+            })
+        });
+        const data = await response.json();
+        if (data.error) {
+            console.error(`API Error: ${data.error.message}`);
+            return "Workspace error. Please try again.";
+        }
+        return data.choices[0].message.content;
+    } catch (err) {
+        console.error("Network connection error:", err);
+        return "";
     }
 }
 
@@ -313,48 +481,56 @@ app.post('/api/gemini', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// NORMALIZED ADAPTIVE GROQ ROUTE
+// ADAPTIVE MULTI-MODEL ROUTE (Chat Mode)
 // -----------------------------------------------------------
 app.post('/api/chat', async (req, res) => {
-    const { messages, mode } = req.body;
-    const GROQ_API_KEY = process.env.GROQ_API_KEY;
-    
-    if (!GROQ_API_KEY) {
-        return res.status(500).json({ error: "Server: Groq credentials missing." });
-    }
-
     try {
-        const activeSystemInstruction = getSystemPrompt(mode);
-        const finalMessages = [
-            { role: 'system', content: activeSystemInstruction },
-            ...messages
-        ];
-
-        const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: { 
-                'Authorization': `Bearer ${GROQ_API_KEY}`, 
-                'Content-Type': 'application/json' 
-            },
-            body: JSON.stringify({ 
-                model: 'llama-3.1-8b-instant', 
-                messages: finalMessages 
-            })
-        });
-
-        const data = await groqRes.json();
+        const { messages, mode } = req.body;
+        const searchQuery = messages?.slice(-6).map(m => m.content).join(' ') || 'General inquiry';
         
-        if (!groqRes.ok) {
-            return res.status(groqRes.status).json({ error: data.error?.message || "Groq request failed." });
+        // Get relevant search results
+        const searchResults = await fetchGoogleSearch(searchQuery, 'web', 5);
+        
+        // Primary model response with search context
+        let primaryResponse = '';
+        if (mode && MODELS[mode]) {
+            primaryResponse = await primaryModelResponse(
+                searchQuery, 
+                mode, 
+                searchResults.count > 0 ? searchResults.items[0]?.snippet || '' : '', 
+                JSON.stringify(searchResults.items)
+            );
+        } else {
+            // Fallback to direct query
+            const directResponse = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${KEYS.openrouter}`
+                },
+                body: JSON.stringify({
+                    model: MODELS.chat.primary,
+                    messages: [{ role: 'user', content: searchQuery }]
+                })
+            });
+            const directData = await directResponse.json();
+            primaryResponse = directData.choices?.[0]?.message?.content || '';
         }
-
-        // Normalized JSON format exactly matching Gemini endpoint { text: response }
-        const chatResponse = data.choices?.[0]?.message?.content || "Unable to extract response.";
-        res.json({ text: chatResponse });
         
-    } catch (error) { 
-        console.error('Groq handling failed:', error);
-        res.status(500).json({ error: 'Groq API backend failure' }); 
+        // Deliverer final response
+        const finalResponse = await delivererModelResponse(
+            primaryResponse, 
+            searchQuery, 
+            mode,
+            JSON.stringify(searchResults.items)
+        );
+        
+        // Normalized JSON format exactly matching Gemini endpoint { text: response }
+        res.json({ text: finalResponse });
+        
+    } catch (error) {
+        console.error('Adaptive multi-model failed:', error);
+        res.status(500).json({ error: 'Multi-model processing failed' });
     }
 });
 
@@ -362,6 +538,77 @@ app.post('/api/check-admin', (req, res) => {
     const { email } = req.body;
     const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
     res.json({ isAdmin: email?.toLowerCase() === ADMIN_EMAIL?.toLowerCase() });
+});
+
+// -----------------------------------------------------------
+// GOOGLE CUSTOM SEARCH ROUTE
+// -----------------------------------------------------------
+app.post('/api/google-search', async (req, res) => {
+    const { query, searchType = 'web', count = 10 } = req.body;
+    const API_KEY = process.env.GOOGLE_SEARCH_API_KEY;
+    const ENGINE_ID = process.env.GOOGLE_SEARCH_ENGINE_ID;
+
+    if (!API_KEY || !ENGINE_ID) {
+        return res.status(500).json({ error: 'Server: Google Search API credentials missing.' });
+    }
+
+    if (!query || typeof query !== 'string') {
+        return res.status(400).json({ error: 'Search query is required and must be a string.' });
+    }
+
+    try {
+        let searchUrl;
+        const encodedQuery = encodeURIComponent(query);
+        const maxResults = Math.min(Math.max(count, 1), 10); // Limit between 1-10 results
+
+        if (searchType === 'images') {
+            searchUrl = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${ENGINE_ID}&q=${encodedQuery}&searchType=image&num=${maxResults}`;
+        } else if (searchType === 'files') {
+            searchUrl = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${ENGINE_ID}&q=${encodedQuery} filetype:pdf|doc|docx|ppt|pptx&num=${maxResults}`;
+        } else {
+            searchUrl = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${ENGINE_ID}&q=${encodedQuery}&num=${maxResults}`;
+        }
+
+        const response = await fetch(searchUrl);
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error('Google Search API Error:', data);
+            return res.status(response.status).json({ 
+                error: data.error?.message || 'Google Search API request failed.' 
+            });
+        }
+
+        const results = {
+            query,
+            searchType,
+            count: data.items?.length || 0,
+            items: data.items?.map(item => ({
+                title: item.title,
+                link: item.link,
+                snippet: item.snippet,
+                displayLink: item.displayLink,
+                image: searchType === 'images' ? {
+                    url: item.link,
+                    thumbnail: item.image?.thumbnailLink,
+                    width: item.image?.width,
+                    height: item.image?.height
+                } : null,
+                file: searchType === 'files' ? {
+                    format: item.mime || 'unknown',
+                    size: item.fileSize || 'unknown'
+                } : null,
+                formattedUrl: item.formattedUrl,
+                pagemap: item.pagemap
+            })) || []
+        };
+
+        res.json(results);
+
+    } catch (err) {
+        console.error('Google Search handling failed:', err);
+        res.status(500).json({ error: 'Google Search backend failure' });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
