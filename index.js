@@ -59,22 +59,22 @@ const KEYS = {
     tavily: process.env.TAVILY_API_KEY // Kept Tavily Key
 };
 
-// Model Configuration for Multi-System AI Consultation
+// Using valid target structures matching your specific sequence providers
 const MODELS = {
     chat: { 
-        primary: 'llama-3.3-70b-versatile', 
-        deliverer: 'gemini-2.0-flash-lite',
-        openrouterModel: 'openrouter/free'
+        groq: 'llama-3.3-70b-versatile', 
+        gemini: 'gemini-2.5-flash',
+        openrouter: 'meta-llama/llama-3.3-70b-instruct:free'
     },
     code: { 
-        primary: 'llama-3.3-70b-specdec', 
-        deliverer: 'gemini-2.0-flash',
-        openrouterModel: 'openrouter/free'
+        groq: 'llama-3.3-70b-specdec', 
+        gemini: 'gemini-2.5-flash',
+        openrouter: 'meta-llama/llama-3.3-70b-instruct:free'
     },
     study: { 
-        primary: 'llama-3.3-70b-versatile', 
-        deliverer: 'gemini-2.5-pro', // Using gemini-2.5-pro for standard compatibility
-        openrouterModel: 'openrouter/free'
+        groq: 'llama-3.3-70b-versatile', 
+        gemini: 'gemini-2.5-pro', 
+        openrouter: 'meta-llama/llama-3.3-70b-instruct:free'
     }
 };
 
