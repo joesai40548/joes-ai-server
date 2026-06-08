@@ -77,48 +77,68 @@ const MODELS = {
     }
 };
 
-// Updated to fetch search results from Tavily's endpoint
+// Parse multiple Tavily keys from a comma-separated string, filtering out empty entries
+const TAVILY_KEYS_POOL = process.env.TAVILY_API_KEY 
+    ? process.env.TAVILY_API_KEY.split(',').map(key => key.trim()).filter(Boolean)
+    : [];
+
+// Updated failover search engine utilizing the keys pool
 async function fetchGoogleSearch(query, searchType = 'web', count = 5) {
-    if (!KEYS.tavily) {
+    if (TAVILY_KEYS_POOL.length === 0) {
+        console.warn('[Search Engine] No Tavily API keys detected in configuration.');
         return { query, searchType, count: 0, items: [] };
     }
 
-    try {
-        const response = await fetch('https://api.tavily.com/search', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                api_key: KEYS.tavily,
-                query: query,
-                search_depth: "basic",
-                max_results: Math.min(Math.max(count, 1), 10)
-            })
-        });
+    // Try every single key inside the pool sequentially until a response succeeds
+    for (let i = 0; i < TAVILY_KEYS_POOL.length; i++) {
+        const activeKey = TAVILY_KEYS_POOL[i];
+        
+        try {
+            console.log(`[Search Engine] Trying Tavily API Key index [${i}] (Total Pool: ${TAVILY_KEYS_POOL.length})`);
+            
+            const response = await fetch('https://api.tavily.com/search', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    api_key: activeKey,
+                    query: query,
+                    search_depth: "basic",
+                    max_results: Math.min(Math.max(count, 1), 10)
+                })
+            });
 
-        const data = await response.json();
+            const data = await response.json();
 
-        if (!response.ok) {
-            console.error('Tavily Search API Error:', data);
-            return { query, searchType, count: 0, items: [] };
+            // If an API key runs out of characters or limits, skip directly to the next key
+            if (!response.ok || data.detail?.error) {
+                console.warn(`[Search Engine] Key index [${i}] exhausted or rejected. Details:`, data.detail?.error || data);
+                continue;
+            }
+
+            console.log(`[Search Engine] Search successful using Tavily Key index [${i}].`);
+            return {
+                query,
+                searchType,
+                count: data.results?.length || 0,
+                items: data.results?.map(item => ({
+                    title: item.title,
+                    link: item.url,
+                    snippet: item.content,
+                    displayLink: new URL(item.url).hostname
+                })) || []
+            };
+
+        } catch (err) {
+            console.error(`[Search Engine] Network exception on Tavily Key index [${i}]:`, err.message);
+            // Fall through to loop next key automatically
         }
-
-        return {
-            query,
-            searchType,
-            count: data.results?.length || 0,
-            items: data.results?.map(item => ({
-                title: item.title,
-                link: item.url,
-                snippet: item.content,
-                displayLink: new URL(item.url).hostname
-            })) || []
-        };
-    } catch (err) {
-        console.error('Tavily Search handling failed:', err);
-        return { query, searchType, count: 0, items: [] };
     }
+
+    // Safety fallback if all configured keys fail
+    console.error('[Search Engine] CRITICAL: All provided Tavily API keys in pool have failed or exhausted limits.');
+    return { query, searchType, count: 0, items: [] };
 }
 
 /**
