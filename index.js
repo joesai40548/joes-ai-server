@@ -58,7 +58,7 @@ const KEYS = {
     tavily: process.env.TAVILY_API_KEY 
 };
 
-// Model Configuration map matching your preferred failover sequence
+// Model Configuration for Multi-System AI Consultation Multi-Tier Discussion
 const MODELS = {
     chat: { 
         groq: 'llama-3.3-70b-versatile', 
@@ -122,18 +122,22 @@ async function fetchGoogleSearch(query, searchType = 'web', count = 5) {
 }
 
 /**
- * Robust Cascading Sequence Handler: Groq -> Gemini -> OpenRouter Fallback
- * Completely handles the fallback array checks defensively to prevent index crashes.
+ * DISCUSSION CHAIN LOGIC ENGINE
+ * Groq generates primary data -> Gemini reviews & enhances with illustrations -> OpenRouter delivers final result
  */
-async function executeSequentialLLM(message, mode, context, searchResults) {
+async function executeDiscussionChain(message, mode, searchResults) {
     const systemPrompt = getSystemPrompt(mode);
     const modeConfig = MODELS[mode] || MODELS.chat;
+    const contextString = JSON.stringify(searchResults, null, 2);
 
-    // ==========================================
-    // TIER 1: GROQ (Primary Attempt)
-    // ==========================================
+    let groqResponse = "";
+    let geminiResponse = "";
+
+    // ------------------------------------------
+    // STAGE 1: GROQ PRIMARY ANALYSIS
+    // ------------------------------------------
     try {
-        console.log(`[Sequence] Tier 1: Trying Groq with ${modeConfig.groq}...`);
+        console.log(`[Discussion Chain] Stage 1: Groq thinking via ${modeConfig.groq}...`);
         const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
             headers: {
@@ -143,58 +147,60 @@ async function executeSequentialLLM(message, mode, context, searchResults) {
             body: JSON.stringify({
                 model: modeConfig.groq,
                 messages: [
-                    { role: 'system', content: `${systemPrompt}\n\nSearch Context:\n${JSON.stringify(searchResults, null, 2)}` },
-                    { role: 'user', content: `Primary analysis for: ${message}\nMode context: ${mode}\nContext: ${context}` }
+                    { role: 'system', content: `${systemPrompt}\n\nWeb Search Reference Content:\n${contextString}` },
+                    { role: 'user', content: `Provide initial evaluation and complete response breakdown for: ${message}` }
                 ]
             })
         });
 
         const data = await response.json();
-        if (data && data.choices && data.choices[0]?.message?.content) {
-            console.log("[Sequence] Success at Groq Tier.");
-            return data.choices[0].message.content;
-        }
-        throw new Error(data?.error?.message || "Invalid response format or empty payload from Groq");
-    } catch (groqErr) {
-        console.warn(`[Sequence] Groq Tier failed: ${groqErr.message}. Cascading down to Gemini Direct API...`);
+        groqResponse = data.choices?.[0]?.message?.content || "Groq primary phase was unable to gather raw logic.";
+        console.log("[Discussion Chain] Stage 1 Complete.");
+    } catch (err) {
+        console.error("Discussion Stage 1 (Groq) Error:", err);
+        groqResponse = "Primary logic engine timeout. Proceeding with raw data benchmarks.";
     }
 
-    // ==========================================
-    // TIER 2: GEMINI (Secondary Native Attempt)
-    // ==========================================
+    // ------------------------------------------
+    // STAGE 2: GEMINI ANALYSIS & DISCUSSION PASS
+    // ------------------------------------------
     try {
-        console.log(`[Sequence] Tier 2: Trying Gemini Native Endpoint with ${modeConfig.gemini}...`);
+        console.log(`[Discussion Chain] Stage 2: Gemini direct peer discussion via ${modeConfig.gemini}...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modeConfig.gemini}:generateContent?key=${KEYS.gemini}`;
         
-        const contents = [
+        const contentPayload = [
             {
                 role: 'user',
-                parts: [{ text: `${systemPrompt}\n\nSearch Context:\n${JSON.stringify(searchResults, null, 2)}\n\nPrimary analysis request for: ${message}\nMode context: ${mode}\nContext: ${context}` }]
+                parts: [{ 
+                    text: `${systemPrompt}\n\n` +
+                          `You are the second engine in a multi-model discussion. Here is the context:\n` +
+                          `User Request: ${message}\n` +
+                          `Tavily Search Results: ${contextString}\n\n` +
+                          `The primary model (Groq) suggested this solution:\n${groqResponse}\n\n` +
+                          `Discuss this response. Enhance it, build on top of it, and apply your advanced features to format tables, integrate visual markdown graphs, or add rich descriptors.`
+                }]
             }
         ];
 
         const response = await fetch(geminiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents })
+            body: JSON.stringify({ contents: contentPayload })
         });
 
         const data = await response.json();
-        const nativeText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (nativeText) {
-            console.log("[Sequence] Success at Gemini Native Tier.");
-            return nativeText;
-        }
-        throw new Error(data?.error?.message || "Invalid response format or empty payload from Gemini Native");
-    } catch (geminiErr) {
-        console.warn(`[Sequence] Gemini Tier failed: ${geminiErr.message}. Cascading down to OpenRouter Final Tier...`);
+        geminiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "Gemini peer pass did not augment data structures.";
+        console.log("[Discussion Chain] Stage 2 Complete.");
+    } catch (err) {
+        console.error("Discussion Stage 2 (Gemini) Error:", err);
+        geminiResponse = `Peer analysis exception occurred. Default fallback on base frame: ${groqResponse}`;
     }
 
-    // ==========================================
-    // TIER 3: OPENROUTER (Final Fallback Tier)
-    // ==========================================
+    // ------------------------------------------
+    // STAGE 3: OPENROUTER DELIVERER PIECE
+    // ------------------------------------------
     try {
-        console.log(`[Sequence] Tier 3: Trying OpenRouter Free Fallback with ${modeConfig.openrouter}...`);
+        console.log(`[Discussion Chain] Stage 3: OpenRouter gathering absolute best delivery via ${modeConfig.openrouter}...`);
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -204,21 +210,33 @@ async function executeSequentialLLM(message, mode, context, searchResults) {
             body: JSON.stringify({
                 model: modeConfig.openrouter,
                 messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: `Analyze: ${message}. Context: ${context}` }
+                    { 
+                        role: 'system', 
+                        content: `${systemPrompt}\n\nYou are the Final Deliverer model in the discussion chain. Your task is to look over the conversation transcripts between the user, Groq, and Gemini, filter out internal chat jargon, balance conflicting views, ensure proper markdown components/images are inserted, and deliver the absolute best final response directly to the user.` 
+                    },
+                    { 
+                        role: 'user', 
+                        content: `User query: ${message}\n\n` +
+                                 `--- DISCUSSION ENGINE TRANSCRIPT ---\n` +
+                                 `Groq analysis: ${groqResponse}\n\n` +
+                                 `Gemini augmentation: ${geminiResponse}\n` +
+                                 `--- END TRANSCRIPT ---\n\n` +
+                                 `Deliver the final response now.`
+                    }
                 ]
             })
         });
 
         const data = await response.json();
         if (data && data.choices && data.choices[0]?.message?.content) {
-            console.log("[Sequence] Success at OpenRouter Fallback Tier.");
+            console.log("[Discussion Chain] Stage 3 Complete. Final delivery ready.");
             return data.choices[0].message.content;
         }
-        throw new Error(data?.error?.message || "Invalid response format or empty payload from OpenRouter");
-    } catch (openRouterErr) {
-        console.error(`[Sequence] Critical: All LLM provider paths have failed.`);
-        return "Joes AI Workspace is experiencing peak demand across API providers. Please try your request again shortly.";
+        throw new Error("OpenRouter response body was empty or structured incorrectly.");
+    } catch (err) {
+        console.error("Discussion Stage 3 (OpenRouter) Error:", err);
+        // Fallback to whichever model has data if the final stage hits a network block
+        return geminiResponse || groqResponse || "System encounter threshold limitation. Please re-run the thread query.";
     }
 }
 
@@ -231,7 +249,7 @@ async function specialistPass(msg, mode, context) {
                 "Authorization": `Bearer ${KEYS.openrouter}`
             },
             body: JSON.stringify({
-                model: MODELS[mode].openrouter,
+                model: MODELS[mode]?.openrouter || 'meta-llama/llama-3.3-70b-instruct:free',
                 messages: [{ role: "user", content: `Review strategy for: ${msg}. Mode context: ${mode}. Additional Data: ${context}` }]
             })
         });
@@ -246,7 +264,6 @@ async function specialistPass(msg, mode, context) {
     }
 }
 
-// Helper to handle base URLs safely
 const getKoofrBaseUrl = () => {
     const url = process.env.CLOUDSYNC_URL;
     if (!url) return null;
@@ -517,30 +534,25 @@ app.post('/api/gemini', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// ADAPTIVE MULTI-MODEL ROUTE (Chat Mode Execution Loop)
+// ADAPTIVE MULTI-MODEL ROUTE (Cascading Discussion Pass)
 // -----------------------------------------------------------
 app.post('/api/chat', async (req, res) => {
     try {
         const { messages, mode } = req.body;
         const searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || 'General inquiry';
         
-        // Fetch matching context items from Tavily 
+        // Fetch web search context matching details via Tavily
         const searchResults = await fetchGoogleSearch(searchQuery, 'web', 5);
         
-        // Direct the request sequence down the cascading handler chain
-        const sequenceOutput = await executeSequentialLLM(
-            searchQuery,
-            mode,
-            searchResults.count > 0 ? searchResults.items[0]?.snippet || '' : '',
-            searchResults.items
-        );
+        // Push elements down the multi-agent discussion stream loop safely
+        const discussionOutput = await executeDiscussionChain(searchQuery, mode, searchResults.items);
         
-        // Return standard JSON matching frontend parser schemas
-        res.json({ text: sequenceOutput });
+        // Deliver clean, wrapped layout output matching client requirements
+        res.json({ text: discussionOutput });
         
     } catch (error) {
-        console.error('Adaptive multi-model route crashed:', error);
-        res.status(500).json({ error: 'Multi-model fallback sequence processing failure.' });
+        console.error('Adaptive multi-model discussion route failed:', error);
+        res.status(500).json({ error: 'Multi-model context aggregation error occurred.' });
     }
 });
 
