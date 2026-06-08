@@ -63,17 +63,17 @@ const MODELS = {
     chat: { 
         groq: 'llama-3.3-70b-versatile', 
         gemini: 'gemini-2.5-flash',
-        openrouter: 'meta-llama/llama-3.3-70b-instruct:free'
+        openrouter: 'openrouter/free' // Automatically uses any available non-busy free model
     },
     code: { 
         groq: 'llama-3.3-70b-specdec', 
         gemini: 'gemini-2.5-flash',
-        openrouter: 'meta-llama/llama-3.3-70b-instruct:free'
+        openrouter: 'openrouter/free' // Automatically uses any available non-busy free model
     },
     study: { 
         groq: 'llama-3.3-70b-versatile', 
         gemini: 'gemini-2.5-pro', 
-        openrouter: 'meta-llama/llama-3.3-70b-instruct:free'
+        openrouter: 'openrouter/free' // Automatically uses any available non-busy free model
     }
 };
 
@@ -200,10 +200,10 @@ async function executeDiscussionChain(message, mode, searchResults) {
     // STAGE 3: OPENROUTER DELIVERER PIECE
     // ------------------------------------------
     try {
-        // FIX: Using highly stable free models via OpenRouter to bypass Venice upstream rate limits
-        const stableOpenRouterModel = "google/gemini-2.5-flash:free"; 
+        // Read dynamically from your updated MODELS configuration ('openrouter/free')
+        const autoFreeRouterModel = modeConfig.openrouter || 'openrouter/free'; 
         
-        console.log(`[Discussion Chain] Stage 3: OpenRouter final delivery via ${stableOpenRouterModel}...`);
+        console.log(`[Discussion Chain] Stage 3: OpenRouter final delivery via dynamic broker (${autoFreeRouterModel})...`);
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -213,7 +213,7 @@ async function executeDiscussionChain(message, mode, searchResults) {
                 "X-Title": "Joes AI Workspace"
             },
             body: JSON.stringify({
-                model: stableOpenRouterModel,
+                model: autoFreeRouterModel,
                 messages: [
                     { 
                         role: 'system', 
@@ -240,7 +240,7 @@ async function executeDiscussionChain(message, mode, searchResults) {
         }
 
         if (data && data.choices && data.choices[0]?.message?.content) {
-            console.log("[Discussion Chain] Stage 3 Complete. Final delivery ready.");
+            console.log("[Discussion Chain] Stage 3 Complete. Final delivery ready via dynamic broker.");
             return data.choices[0].message.content;
         }
         throw new Error("OpenRouter response body fields missing choices array payload.");
@@ -260,7 +260,7 @@ async function specialistPass(msg, mode, context) {
                 "Authorization": `Bearer ${KEYS.openrouter}`
             },
             body: JSON.stringify({
-                model: MODELS[mode]?.openrouter || 'meta-llama/llama-3.3-70b-instruct:free',
+                model: MODELS[mode]?.openrouter || 'openrouter/free',
                 messages: [{ role: "user", content: `Review strategy for: ${msg}. Mode context: ${mode}. Additional Data: ${context}` }]
             })
         });
@@ -554,7 +554,7 @@ app.post('/api/chat', async (req, res) => {
         // Grab context from recent messages
         let searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || 'General inquiry';
         
-        // FIX: Truncate query safely to stay well within Tavily's 400-character limit
+        // Truncate query safely to stay within Tavily's 400-character limit
         if (searchQuery.length > 300) {
             searchQuery = searchQuery.substring(0, 300) + '...';
         }
