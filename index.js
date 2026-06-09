@@ -31,6 +31,24 @@ const KEYS = {
     tavily: process.env.TAVILY_API_KEY 
 };
 
+const MODELS = {
+    chat: { 
+        groq: 'llama-3.3-70b-versatile', 
+        gemini: 'gemini-2.5-flash',
+        openrouter: 'openrouter/free'
+    },
+    code: { 
+        groq: 'llama-3.3-70b-specdec', 
+        gemini: 'gemini-2.5-flash',
+        openrouter: 'openrouter/free'
+    },
+    study: { 
+        groq: 'llama-3.3-70b-versatile', 
+        gemini: 'gemini-2.5-pro', 
+        openrouter: 'openrouter/free'
+    }
+};
+
 const TAVILY_KEYS_POOL = process.env.TAVILY_API_KEY 
     ? process.env.TAVILY_API_KEY.split(',').map(key => key.trim()).filter(Boolean)
     : [];
@@ -81,6 +99,40 @@ const getKoofrBaseUrl = () => {
     return url.endsWith('/') ? url : `${url}/`;
 };
 
+/**
+ * METHOD 2: LLM Intent Classifier Guard Rail
+ * Analyzes whether the user prompt genuinely requires real-time search engine data.
+ */
+async function checkSearchIntent(userMessage) {
+    if (!KEYS.gemini) return true; // Fallback to search if API key missing
+    
+    try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
+        const classificationPrompt = 
+            "Analyze the following user input message. Determine if answering it requires an external web search or live up-to-date data (e.g., current events, news, specific video searches, weather, lyrics lookups, or live facts)." +
+            "\n\nRespond with exactly 'TRUE' if it requires a web search, or exactly 'FALSE' if it is a simple greeting, casual conversation, math calculation, or regular code block request that can be answered from base knowledge." +
+            "\n\nDo not include any punctuation, formatting, or explanation. Only return 'TRUE' or 'FALSE'." +
+            `\n\nUser Input: "${userMessage}"`;
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ role: 'user', parts: [{ text: classificationPrompt }] }]
+            })
+        });
+
+        const data = await response.json();
+        const classification = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim().toUpperCase() || "FALSE";
+        
+        console.log(`[Intent Classifier] Message: "${userMessage}" -> Requires Search? [${classification}]`);
+        return classification.includes("TRUE");
+    } catch (err) {
+        console.error('[Intent Classifier] Error executing check, defaulting to true:', err.message);
+        return true; 
+    }
+}
+
 // --- API ROUTES ---
 
 // Root Endpoint
@@ -93,7 +145,7 @@ app.get('/', (req, res) => {
     });
 });
 
-// Search engine utilizing the keys pool
+// Failover search engine utilizing the keys pool
 async function fetchTavilySearch(query, searchType = 'web', count = 5) {
     if (TAVILY_KEYS_POOL.length === 0) {
         console.warn('[Search Engine] No Tavily API keys detected in configuration.');
@@ -194,7 +246,6 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
     const contextString = JSON.stringify(searchResults, null, 2);
     const hasAttachments = attachments && attachments.length > 0;
 
-    // Attachments always route to Gemini for parsing and multi-modal handling
     if (hasAttachments) {
         console.log(`[Model Engine] Attachments detected. Routing to Gemini for file analysis...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
@@ -312,6 +363,165 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
                 return groqData.choices[0].message.content;
             }
             throw new Error('Groq response body missing choices array payload.');
+    }
+}
+
+/**
+ * CASCADING MULTI-MODEL DISCUSSION ENGINE
+ */
+async function executeDiscussionChain(message, mode, searchResults, attachments = []) {
+    const systemPrompt = getSystemPrompt(mode);
+    const contextString = JSON.stringify(searchResults, null, 2);
+    const hasAttachments = attachments && attachments.length > 0;
+
+    const modeConfig = MODELS[mode] || MODELS.chat;
+
+    let groqResponse = "";
+    let geminiResponse = "";
+
+    // STAGE 1: PRIMARY ANALYSIS FRAME (Groq / OpenRouter)
+    if (!hasAttachments && modeConfig.groq) {
+        try {
+            console.log(`[Discussion Chain] Stage 1: Initial pass via ${modeConfig.groq}...`);
+            const groqUrl = 'https://api.groq.com/openai/v1/chat/completions';
+            const response = await fetch(groqUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${KEYS.groq}`
+                },
+                body: JSON.stringify({
+                    model: modeConfig.groq,
+                    messages: [
+                        { role: 'system', content: `${systemPrompt}\n\nSearch Results Context:\n${contextString}` },
+                        { role: 'user', content: `User request: ${message}\n\nSynthesize an initial complete answer layout utilizing the above search context details.` }
+                    ]
+                })
+            });
+
+            const data = await response.json();
+            if (response.ok && data.choices?.[0]?.message?.content) {
+                groqResponse = data.choices[0].message.content;
+                console.log("[Discussion Chain] Stage 1 Complete.");
+            } else {
+                console.warn("[Discussion Chain] Stage 1 Base layer response failed or returned empty payload.");
+                groqResponse = "Primary stage pass yielded no response metrics.";
+            }
+        } catch (err) {
+            console.error("Discussion Stage 1 (Groq) Error:", err);
+            groqResponse = "Primary synthesis phase bypassed due to error pipeline.";
+        }
+    } else {
+        console.log("[Discussion Chain] No Groq model configured for this mode, skipping to Gemini...");
+    }
+
+    // STAGE 2: GEMINI ANALYSIS & DISCUSSION PASS
+    try {
+        console.log(`[Discussion Chain] Stage 2: Gemini direct peer discussion via ${modeConfig.gemini}...`);
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modeConfig.gemini}:generateContent?key=${KEYS.gemini}`;
+        
+        const parts = [{ 
+            text: `${systemPrompt}\n\n` +
+                  `You are the second engine in a multi-model discussion. Here is the context:\n` +
+                  `User Request: ${message}\n` +
+                  `Tavily Search Results: ${contextString}\n\n`
+        }];
+
+        if (hasAttachments) {
+            parts.push(`\n\n[ATTACHMENTS DETECTED - ANALYZE THESE FILES]`);
+        }
+
+        const geminiContents = [{
+            role: 'user',
+            parts: [{ 
+                text: parts[0].text
+            }]
+        }];
+
+        attachments.forEach(att => {
+            if (att.fileData && att.mimeType) {
+                geminiContents[0].parts.push({
+                    inline_data: {
+                        mime_type: att.mimeType,
+                        data: att.fileData
+                    }
+                });
+            }
+        });
+
+        if (hasAttachments) {
+            geminiContents[0].parts.push({
+                text: `\n\nPlease analyze the attached files and incorporate your findings into your response.`
+            });
+        } else {
+            geminiContents[0].parts.push({
+                text: `\n\nThe primary model (Groq) suggested this solution:\n${groqResponse}\n\nDiscuss this response. Enhance it, build on top of it, and apply your advanced features to format tables, integrate visual markdown graphs, or add rich descriptors.`
+            });
+        }
+
+        const response = await fetch(geminiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: geminiContents })
+        });
+
+        const data = await response.json();
+        geminiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "Gemini peer pass did not augment data structures.";
+        console.log("[Discussion Chain] Stage 2 Complete.");
+    } catch (err) {
+        console.error("Discussion Stage 2 (Gemini) Error:", err);
+        geminiResponse = `Peer analysis exception occurred. Default fallback on base frame: ${hasAttachments ? "No Groq analysis (attachments present)" : groqResponse}`;
+    }
+
+    // STAGE 3: OPENROUTER DELIVERER PIECE
+    try {
+        const autoFreeRouterModel = modeConfig.openrouter || 'openrouter/free'; 
+        console.log(`[Discussion Chain] Stage 3: OpenRouter final delivery via dynamic broker (${autoFreeRouterModel})...`);
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${KEYS.openrouter}`,
+                "HTTP-Referer": "https://joes-ai-server.onrender.com",
+                "X-Title": "Joes AI Workspace"
+            },
+            body: JSON.stringify({
+                model: autoFreeRouterModel,
+                messages: [
+                    { 
+                        role: 'system', 
+                        content: `${systemPrompt}\n\nYou are the Final Deliverer model in the discussion chain. Your task is to look over the conversation transcripts between the user, Groq, and Gemini, filter out internal chat jargon, balance conflicting views, ensure proper markdown components/images are inserted, and deliver the absolute best final response directly to the user.` 
+                    },
+                    { 
+                        role: 'user', 
+                        content: `User query: ${message}\n\n` +
+                                 `--- DISCUSSION ENGINE TRANSCRIPT ---\n` +
+                                 `${hasAttachments ? 'Groq: [SKIPPED - Attachments detected]' : `Groq analysis: ${groqResponse}`}\n\n` +
+                                 `Gemini augmentation: ${geminiResponse}\n` +
+                                 `--- END TRANSCRIPT ---\n\n` +
+                                 `Deliver the polished final response now.`
+                    }
+                ]
+            })
+        });
+
+        const data = await response.json();
+        
+        if (!response.ok) {
+            console.error("[OpenRouter API Error Details]:", data);
+            throw new Error(data?.error?.message || `HTTP error! status: ${response.status}`);
+        }
+
+        if (data && data.choices && Array.isArray(data.choices) && data.choices.length > 0 && data.choices[0]?.message?.content) {
+            console.log("[Discussion Chain] Stage 3 Complete. Final delivery ready via dynamic broker.");
+            return data.choices[0].message.content;
+        }
+        
+        throw new Error("OpenRouter response body fields missing choices array payload.");
+    } catch (err) {
+        console.error("Discussion Stage 3 (OpenRouter) Error:", err);
+        console.log("[Discussion Chain Fallback] Serving Gemini response directly due to OpenRouter block or bad signature.");
+        return geminiResponse || "System encounter threshold limitation. Please re-run the thread query.";
     }
 }
 
@@ -744,13 +954,14 @@ app.get('/api/drive/files', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// GMAIL API ROUTE: Send alert/emails safely
+// GMAIL SEND ROUTE
 // -----------------------------------------------------------
 app.post('/api/gmail/send', async (req, res) => {
-    const { to, subject, message, accessToken } = req.body;
+    const { to, subject, message } = req.body;
+    const accessToken = req.headers['authorization']?.split(' ')[1];
 
     if (!accessToken) {
-        return res.status(401).json({ error: 'Missing Gmail authorization credentials.' });
+        return res.status(401).json({ error: 'Missing access token for Gmail.' });
     }
 
     if (!to || !subject || !message) {
@@ -795,8 +1006,73 @@ app.post('/api/gmail/send', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// ADAPTIVE CHAT ROUTE (Utilizes single-model responses with Tavily / YouTube Integration)
+// ADAPTIVE MULTI-MODEL ROUTES (Both mapped clean with Method 2 integration)
 // -----------------------------------------------------------
+
+// Route 1 (Single model structure mapping)
+app.post('/api/chat', async (req, res, next) => {
+    // Safety fallback: Check if this payload belongs to the next duplicate route declaration
+    if (req.body.messages && req.body.messages.some(m => m.attachments)) {
+         return next(); 
+    }
+    
+    try {
+        const { messages, mode } = req.body;
+
+        const userMessages = messages?.filter(m => m.role === 'user') || [];
+        const latestUserMessage = userMessages.length > 0
+            ? userMessages[userMessages.length - 1].content
+            : 'General inquiry';
+
+        let searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || latestUserMessage;
+        const hasAttachments = messages?.some(m => m.attachments?.length > 0);
+        const attachments = hasAttachments
+            ? messages.filter(m => m.attachments?.length > 0).flatMap(m => m.attachments)
+            : [];
+
+        if (searchQuery.length > 300) {
+            searchQuery = searchQuery.substring(0, 300) + '...';
+        }
+
+        let combinedResults = [];
+        
+        // METHOD 2: Execute semantic guard rail intent classification
+        const needsWebSearch = await checkSearchIntent(latestUserMessage);
+
+        if (needsWebSearch) {
+            console.log(`[Search Engine] Intent confirmed. Fetching live indices for: "${latestUserMessage}"`);
+            const [tavilyResults, youtubeResults] = await Promise.all([
+                fetchTavilySearch(searchQuery, 'web', 5),
+                fetchYoutubeSearch(searchQuery, 5).catch(err => {
+                    console.error('[Search] YouTube search failed:', err.message);
+                    return { query: searchQuery, count: 0, videos: [] };
+                })
+            ]);
+
+            combinedResults = [
+                ...(tavilyResults.items || []),
+                ...(youtubeResults.videos || []).map(v => ({
+                    title: v.title,
+                    link: v.url,
+                    snippet: v.description,
+                    displayLink: new URL(v.url).hostname
+                }))
+            ];
+            console.log(`[Search] Aggregated ${combinedResults.length} search entities successfully.`);
+        } else {
+            console.log(`[Search Engine] Intent skipped. Processing natively via downstream models.`);
+        }
+        
+        const discussionOutput = await executeSingleModelResponse(latestUserMessage, mode, combinedResults, attachments);
+        res.json({ text: discussionOutput });
+
+    } catch (error) {
+        console.error('Adaptive multi-model single execution failed:', error);
+        res.status(500).json({ error: 'Multi-model context aggregation error occurred.' });
+    }
+});
+
+// Route 2 (Cascading Pass mapping setup)
 app.post('/api/chat', async (req, res) => {
     try {
         const { messages, mode } = req.body;
@@ -816,40 +1092,28 @@ app.post('/api/chat', async (req, res) => {
             searchQuery = searchQuery.substring(0, 300) + '...';
         }
 
-        console.log(`[Search] Forwarding query to Tavily and YouTube (${searchQuery.length} chars)`);
-        const [tavilyResults, youtubeResults] = await Promise.all([
-            fetchTavilySearch(searchQuery, 'web', 5),
-            fetchYoutubeSearch(searchQuery, 5).catch(err => {
-                console.error('[Search] YouTube search failed:', err.message);
-                return { query: searchQuery, count: 0, videos: [] };
-            })
-        ]);
-
-        const combinedResults = [
-            ...(tavilyResults.items || []),
-            ...(youtubeResults.videos || []).map(v => ({
-                title: v.title,
-                link: v.url,
-                snippet: v.description,
-                displayLink: new URL(v.url).hostname
-            }))
-        ];
-
-        console.log(`[Search] Combined ${combinedResults.length} results (Tavily: ${tavilyResults.count}, YouTube: ${youtubeResults.count})`);
+        let searchItems = [];
         
-        const responseText = await executeSingleModelResponse(latestUserMessage, mode, combinedResults, attachments);
+        // METHOD 2: Execute semantic guard rail intent classification
+        const needsWebSearch = await checkSearchIntent(latestUserMessage);
 
-        res.json({ text: responseText });
+        if (needsWebSearch) {
+            console.log(`[Discussion Chain Search] Intent confirmed. Fetching live context: "${latestUserMessage}"`);
+            const searchResults = await fetchTavilySearch(searchQuery, 'web', 5);
+            searchItems = searchResults.items || [];
+        } else {
+            console.log(`[Discussion Chain Search] Intent skipped. Cascading natively without injection context.`);
+        }
+
+        const discussionOutput = await executeDiscussionChain(latestUserMessage, mode, searchItems, attachments);
+        res.json({ text: discussionOutput });
 
     } catch (error) {
-        console.error('Adaptive chat single-model processing failed:', error);
-        res.status(500).json({ error: 'Context aggregation or model execution error occurred.' });
+        console.error('Adaptive multi-model discussion route failed:', error);
+        res.status(500).json({ error: 'Multi-model context aggregation error occurred.' });
     }
 });
 
-// -----------------------------------------------------------
-// ADMIN CHECK ROUTE
-// -----------------------------------------------------------
 app.post('/api/check-admin', (req, res) => {
     const { email } = req.body;
     const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
