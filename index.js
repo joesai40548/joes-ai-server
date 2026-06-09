@@ -38,11 +38,32 @@ const TAVILY_KEYS_POOL = process.env.TAVILY_API_KEY
 // --- HELPER FUNCTIONS ---
 
 /**
+ * Sanitizes the User ID to prevent path traversal issues.
+ */
+function getSafeUserId(userId) {
+    if (!userId || typeof userId !== 'string') return 'default';
+    return userId.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+}
+
+/**
  * Strips path traversal sequences to secure cloud storage routes.
  */
 function getSafeFilename(filename) {
-    if (!filename) return null;
-    const base = path.basename(filename);
+    if (!filename || typeof filename !== 'string') return null;
+    
+    let decoded = filename;
+    try {
+        decoded = decodeURIComponent(filename);
+    } catch (e) {
+        // Fallback to original if decoding fails
+    }
+
+    const base = path.basename(decoded);
+    // Extra guard against path traversals
+    if (base.includes('..') || base.includes('/') || base.includes('\\')) {
+        return null;
+    }
+    
     if (!base.endsWith('.json')) {
         return null;
     }
@@ -59,10 +80,10 @@ function getSystemPrompt(mode) {
         "If any user asks you who developed you, who owns you, or who built you, you must answer proudly that you were developed and are owned by AKRAM JOES TECHNOLOGIES. " +
         "Never state that you are developed by Google, Meta, OpenAI, or anyone else. " +
         "CRITICAL OUTPUT REQUIREMENTS:\n" +
-        "1. TABLES: MUST format as clean Markdown (| Column | Column |)\n" +
-        "2. DIAGRAMS & VISUALS: Generate Mermaid or real images ![Alt text](image_url)\n" +
+        "1. TABLES: MUST use strict GitHub Flavored Markdown. You MUST include the header separator row (e.g., | Header | Header |\n|---|---|). Never output smashed text.\n" +
+        "2. DIAGRAMS & VISUALS: Generate Mermaid or real images ![Alt text](image_url). You are provided with direct image URLs and video thumbnails in the search context. If relevant, you MUST display them to the user using Markdown images, for example as a clickable thumbnail: [![Watch Video](thumbnail_url)](video_url) or direct image embeds: ![Topic Image](image_url) to visually enrich your response.\n" +
         "3. STRUCTURED OUTPUT: Clear headings, bullet points. No filler text.\n" +
-        "4. CITATIONS: Include inline images or references. Use reliable sources.";
+        "4. CITATIONS: Include inline references. Use reliable sources.";
 
     switch(mode) {
         case 'code':
@@ -97,7 +118,7 @@ app.get('/', (req, res) => {
 async function fetchTavilySearch(query, searchType = 'web', count = 5) {
     if (TAVILY_KEYS_POOL.length === 0) {
         console.warn('[Search Engine] No Tavily API keys detected in configuration.');
-        return { query, searchType, count: 0, items: [] };
+        return { query, searchType, count: 0, items: [], images: [] };
     }
 
     for (let i = 0; i < TAVILY_KEYS_POOL.length; i++) {
@@ -113,6 +134,7 @@ async function fetchTavilySearch(query, searchType = 'web', count = 5) {
                     api_key: activeKey,
                     query: query,
                     search_depth: "basic",
+                    include_images: true, // Fetch source page visuals and diagrams
                     max_results: Math.min(Math.max(count, 1), 10)
                 })
             });
@@ -129,11 +151,13 @@ async function fetchTavilySearch(query, searchType = 'web', count = 5) {
                 query,
                 searchType,
                 count: data.results?.length || 0,
+                images: data.images || [], // Gathers query-relevant visual media
                 items: data.results?.map(item => ({
                     title: item.title,
                     link: item.url,
                     snippet: item.content,
-                    displayLink: new URL(item.url).hostname
+                    displayLink: new URL(item.url).hostname,
+                    images: item.images || [] // Capture source-linked specific images
                 })) || []
             };
 
@@ -143,7 +167,7 @@ async function fetchTavilySearch(query, searchType = 'web', count = 5) {
     }
 
     console.error('[Search Engine] CRITICAL: All provided Tavily API keys in pool have failed or exhausted limits.');
-    return { query, searchType, count: 0, items: [] };
+    return { query, searchType, count: 0, items: [], images: [] };
 }
 
 async function fetchYoutubeSearch(query, maxResults = 5) {
@@ -196,6 +220,9 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
 
     // Attachments always route to Gemini for parsing and multi-modal handling
     if (hasAttachments) {
+        if (!KEYS.gemini) {
+            throw new Error('Gemini API Key is missing. Cannot process attachments.');
+        }
         console.log(`[Model Engine] Attachments detected. Routing to Gemini for file analysis...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
         
@@ -231,7 +258,28 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
         return data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request.";
     }
 
-    switch(mode) {
+    // Determine target mode dynamically with graceful environment fallback
+    let selectedMode = mode;
+    if (selectedMode === 'code' && !KEYS.openrouter) {
+        console.warn('[Model Engine] OpenRouter key missing. Falling back to Groq for execution.');
+        selectedMode = 'chat';
+    }
+    if (selectedMode === 'study' && !KEYS.gemini) {
+        console.warn('[Model Engine] Gemini key missing. Falling back to Groq for execution.');
+        selectedMode = 'chat';
+    }
+    if (selectedMode === 'chat' && !KEYS.groq) {
+        console.warn('[Model Engine] Groq key missing. Attempting fallback model provider.');
+        if (KEYS.gemini) {
+            selectedMode = 'study';
+        } else if (KEYS.openrouter) {
+            selectedMode = 'code';
+        } else {
+            throw new Error('All model API credentials (Groq, Gemini, OpenRouter) are missing.');
+        }
+    }
+
+    switch(selectedMode) {
         case 'code':
             console.log(`[Model Engine] Code mode. Routing to OpenRouter...`);
             const openRouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
@@ -322,7 +370,7 @@ app.get('/api/chats', async (req, res) => {
     const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
-    const userId = req.headers['x-user-id'] || 'default';
+    const userId = getSafeUserId(req.headers['x-user-id']);
 
     if (!baseUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Config Missing: Set CLOUDSYNC variables on Render." });
@@ -343,7 +391,7 @@ app.get('/api/chats', async (req, res) => {
         const hrefRegex = /<(?:[^:>]+:)?href>([^<]+)<\/(?:[^:>]+:)?href>/gi;
         let match;
         const files = [];
-        const userPrefix = `JoesAI_Chat_${userId.trim()}__`;
+        const userPrefix = `JoesAI_Chat_${userId}__`;
 
         while ((match = hrefRegex.exec(xml)) !== null) {
             const decodedPath = decodeURIComponent(match[1]);
@@ -415,14 +463,19 @@ app.post('/api/chats', async (req, res) => {
     const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
-    const userId = req.headers['x-user-id'] || 'default';
+    const userId = getSafeUserId(req.headers['x-user-id']);
+
+    if (!sessionId || !history) {
+        return res.status(400).json({ error: "Missing required properties 'sessionId' or 'history'." });
+    }
 
     if (!baseUrl || !user || !password) {
         return res.status(400).json({ error: "Cloud Sync Config Missing on Render." });
     }
 
     try {
-        const safeTitle = title.trim().replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-');
+        const rawTitle = title || 'untitled';
+        const safeTitle = rawTitle.trim().replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-');
         const filename = `JoesAI_Chat_${userId}__${sessionId}__${safeTitle}.json`;
         const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
 
@@ -432,7 +485,7 @@ app.post('/api/chats', async (req, res) => {
                 'Authorization': authHeader,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ sessionId, title, history })
+            body: JSON.stringify({ sessionId, title: rawTitle, history })
         });
 
         if (response.ok || response.status === 201 || response.status === 204) {
@@ -454,11 +507,15 @@ app.post('/api/chats/rename', async (req, res) => {
     const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
     const password = process.env.CLOUDSYNC_PASSWORD;
-    const userId = req.headers['x-user-id'] || 'default';
+    const userId = getSafeUserId(req.headers['x-user-id']);
 
     const safeOldFilename = getSafeFilename(oldFilename);
     if (!safeOldFilename) {
         return res.status(400).json({ error: "Invalid old filename format." });
+    }
+
+    if (!sessionId || !newTitle) {
+        return res.status(400).json({ error: "Missing required properties: 'sessionId' or 'newTitle'." });
     }
 
     if (!baseUrl || !user || !password) {
@@ -556,7 +613,7 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
         const history = chatData.history || [];
         const chatTitle = chatData.title || 'Chat Export';
 
-        // 1. Compile the Document Content Structure 
+        // Compile the Document Content Structure 
         const docContent = [
             { text: chatTitle, style: 'header' },
             { text: `Exported on: ${new Date().toLocaleString()}`, style: 'subHeader' },
@@ -564,7 +621,7 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
             { text: '\n' }
         ];
 
-        // 2. Iterate dynamically over chat context frames
+        // Iterate dynamically over chat context frames
         history.forEach(msg => {
             const isUser = msg.role === 'user';
             
@@ -585,7 +642,7 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
             docContent.push({ text: '\n' });
         });
 
-        // 3. Define formatting styles targeting standard base fonts
+        // Define formatting styles targeting standard base fonts
         const docDefinition = {
             content: docContent,
             defaultStyle: {
@@ -623,12 +680,19 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
             }
         };
 
-        // 4. Create binary stream architecture and output response payload
+        // Create binary stream architecture and output response payload safely
         const pdfDoc = printer.createPdfKitDocument(docDefinition);
-        
         const cleanDownloadName = filename.replace('.json', '.pdf');
+        
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="${cleanDownloadName}"`);
+
+        pdfDoc.on('error', (pdfErr) => {
+            console.error("PDF engine streaming crash:", pdfErr);
+            if (!res.headersSent) {
+                res.status(500).json({ error: "An error occurred during PDF rendering." });
+            }
+        });
 
         pdfDoc.pipe(res);
         pdfDoc.end();
@@ -744,57 +808,6 @@ app.get('/api/drive/files', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// GMAIL API ROUTE: Send alert/emails safely
-// -----------------------------------------------------------
-app.post('/api/gmail/send', async (req, res) => {
-    const { to, subject, message, accessToken } = req.body;
-
-    if (!accessToken) {
-        return res.status(401).json({ error: 'Missing Gmail authorization credentials.' });
-    }
-
-    if (!to || !subject || !message) {
-        return res.status(400).json({ error: 'Missing to, subject, or message fields.' });
-    }
-
-    try {
-        const rawMessage = [
-            `To: ${to}`,
-            'Content-Type: text/html; charset=utf-8',
-            'MIME-Version: 1.0',
-            `Subject: ${subject}`,
-            '',
-            message
-        ].join('\r\n');
-
-        const encodedMessage = Buffer.from(rawMessage)
-            .toString('base64')
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=+$/, '');
-
-        const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ raw: encodedMessage })
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error?.message || 'Gmail API error');
-        }
-
-        res.json({ success: true });
-    } catch (err) {
-        console.error('Gmail alert error:', err);
-        res.status(500).json({ error: 'Failed to send Gmail alert.', details: err.message });
-    }
-});
-
-// -----------------------------------------------------------
 // ADAPTIVE CHAT ROUTE (Utilizes single-model responses with Tavily / YouTube Integration)
 // -----------------------------------------------------------
 app.post('/api/chat', async (req, res) => {
@@ -825,25 +838,47 @@ app.post('/api/chat', async (req, res) => {
             })
         ]);
 
-        const combinedResults = [
+        const textResults = [
             ...(tavilyResults.items || []),
-            ...(youtubeResults.videos || []).map(v => ({
-                title: v.title,
-                link: v.url,
-                snippet: v.description,
-                displayLink: new URL(v.url).hostname
-            }))
+            ...(youtubeResults.videos || []).map(v => {
+                let displayLink = 'youtube.com';
+                try {
+                    if (v.url) {
+                        displayLink = new URL(v.url).hostname;
+                    }
+                } catch (e) {
+                    // Safe fallback
+                }
+                return {
+                    title: v.title,
+                    link: v.url,
+                    snippet: v.description,
+                    displayLink,
+                    thumbnail: v.thumbnail
+                };
+            })
         ];
 
-        console.log(`[Search] Combined ${combinedResults.length} results (Tavily: ${tavilyResults.count}, YouTube: ${youtubeResults.count})`);
+        // Gathers visual sources (YouTube thumbnails and top-level Tavily related web images)
+        const topicImages = [
+            ...(tavilyResults.images || []),
+            ...(youtubeResults.videos || []).map(v => v.thumbnail).filter(Boolean)
+        ];
+
+        const combinedContext = {
+            search_items: textResults,
+            visual_assets: topicImages
+        };
+
+        console.log(`[Search] Combined ${textResults.length} text items & ${topicImages.length} visual resources.`);
         
-        const responseText = await executeSingleModelResponse(latestUserMessage, mode, combinedResults, attachments);
+        const responseText = await executeSingleModelResponse(latestUserMessage, mode, combinedContext, attachments);
 
         res.json({ text: responseText });
 
     } catch (error) {
         console.error('Adaptive chat single-model processing failed:', error);
-        res.status(500).json({ error: 'Context aggregation or model execution error occurred.' });
+        res.status(500).json({ error: 'Context aggregation or model execution error occurred.', details: error.message });
     }
 });
 
