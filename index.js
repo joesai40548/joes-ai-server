@@ -24,16 +24,20 @@ app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(cors());
 
 // --- CONFIG & KEYS ---
-const KEYS = {
-    groq: process.env.GROQ_API_KEY,
-    gemini: process.env.GEMINI_API_KEY,
-    openrouter: process.env.OPENROUTER_API_KEY,
-    tavily: process.env.TAVILY_API_KEY 
-};
-
 const TAVILY_KEYS_POOL = process.env.TAVILY_API_KEY 
     ? process.env.TAVILY_API_KEY.split(',').map(key => key.trim()).filter(Boolean)
     : [];
+
+const GEMINI_KEYS_POOL = process.env.GEMINI_API_KEY 
+    ? process.env.GEMINI_API_KEY.split(',').map(key => key.trim()).filter(Boolean)
+    : [];
+
+const KEYS = {
+    groq: process.env.GROQ_API_KEY,
+    gemini: GEMINI_KEYS_POOL,
+    openrouter: process.env.OPENROUTER_API_KEY,
+    tavily: process.env.TAVILY_API_KEY 
+};
 
 // --- HELPER FUNCTIONS ---
 
