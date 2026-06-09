@@ -102,6 +102,90 @@ const getKoofrBaseUrl = () => {
     return url.endsWith('/') ? url : `${url}/`;
 };
 
+// --- WATERFALL API ROUTING HELPERS ---
+
+async function callOpenRouter(systemPrompt, contextString, message) {
+    if (!KEYS.openrouter) throw new Error("OpenRouter credentials missing in environment settings.");
+    const openRouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
+    const response = await fetch(openRouterUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${KEYS.openrouter}`,
+            'HTTP-Referer': 'https://joes-ai-server.onrender.com',
+            'X-Title': 'Joes AI Workspace'
+        },
+        body: JSON.stringify({
+            model: 'openrouter/free',
+            messages: [
+                { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` },
+                { role: 'user', content: `User Request: ${message}\n\nUse the search results above to provide an accurate, polished response.` }
+            ]
+        })
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data?.error?.message || `OpenRouter API returned HTTP status ${response.status}`);
+    }
+    if (data?.choices?.[0]?.message?.content) {
+        return data.choices[0].message.content;
+    }
+    throw new Error("OpenRouter completion response payload structure is missing standard content field.");
+}
+
+async function callGeminiStudy(systemPrompt, contextString, message) {
+    if (!KEYS.gemini) throw new Error("Gemini credentials missing in environment settings.");
+    const studyGeminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
+    const studyParts = [{ 
+        text: `${systemPrompt}\n\n` +
+              `User Request: ${message}\n` +
+              `Search Results: ${contextString}\n\n` +
+              `Please use the search results above to provide an accurate, structured academic response with diagrams and quiz questions where appropriate.`
+    }];
+    const response = await fetch(studyGeminiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            contents: [{ role: 'user', parts: studyParts }],
+            systemInstruction: { parts: [{ text: systemPrompt }] }
+        })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.error?.message || `Gemini Study API returned HTTP status ${response.status}`);
+    }
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || "Gemini returned empty candidate text content.";
+}
+
+async function callGroq(systemPrompt, contextString, message) {
+    if (!KEYS.groq) throw new Error("Groq credentials missing in environment settings.");
+    const groqUrl = 'https://api.groq.com/openai/v1/chat/completions';
+    const response = await fetch(groqUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${KEYS.groq}`
+        },
+        body: JSON.stringify({
+            model: 'llama-3.3-70b-versatile',
+            messages: [
+                { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` },
+                { role: 'user', content: `User Request: ${message}\n\nUse the search results above to provide an accurate, polished response.` }
+            ]
+        })
+    });
+
+    const data = await response.json();
+    if (!groqResponse.ok && !response.ok) {
+        throw new Error(data?.error?.message || `Groq API returned HTTP status ${response.status}`);
+    }
+    if (data?.choices?.[0]?.message?.content) {
+        return data.choices[0].message.content;
+    }
+    throw new Error("Groq completion response payload structure is missing standard content field.");
+}
+
 // --- API ROUTES ---
 
 // Root Endpoint
@@ -211,165 +295,96 @@ async function fetchYoutubeSearch(query, maxResults = 5) {
 }
 
 /**
- * SINGLE MODEL RESPONSE ENGINE
+ * SINGLE MODEL RESPONSE ENGINE WITH FAILLOVER WATERFALL
  */
 async function executeSingleModelResponse(message, mode, searchResults, attachments = []) {
     const systemPrompt = getSystemPrompt(mode);
     const contextString = JSON.stringify(searchResults, null, 2);
     const hasAttachments = attachments && attachments.length > 0;
 
-    // Attachments always route to Gemini for parsing and multi-modal handling
+    // Attachments strictly route to Gemini first for multimodal processing
     if (hasAttachments) {
-        if (!KEYS.gemini) {
-            throw new Error('Gemini API Key is missing. Cannot process attachments.');
-        }
-        console.log(`[Model Engine] Attachments detected. Routing to Gemini for file analysis...`);
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
-        
-        const parts = [{ 
-            text: `${systemPrompt}\n\n` +
-                  `User Request: ${message}\n` +
-                  `Search Results: ${contextString}\n\n` +
-                  `[ATTACHMENTS DETECTED - ANALYZE THESE FILES]\n\n` +
-                  `Please analyze the attached files and incorporate your findings into your response.`
-        }];
-
-        attachments.forEach(att => {
-            if (att.fileData && att.mimeType) {
-                parts.push({
-                    inline_data: {
-                        mime_type: att.mimeType,
-                        data: att.fileData
-                    }
-                });
-            }
-        });
-
-        const response = await fetch(geminiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{ role: 'user', parts }],
-                systemInstruction: { parts: [{ text: systemPrompt }] }
-            })
-        });
-
-        const data = await response.json();
-        if (!response.ok) {
-            console.error('[Model Engine] Gemini Attachment Call Failed:', data);
-            throw new Error(data.error?.message || `Gemini API returned status ${response.status}`);
-        }
-
-        return data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request structure.";
-    }
-
-    // Determine target mode dynamically with graceful environment fallback
-    let selectedMode = mode;
-    if (selectedMode === 'code' && !KEYS.openrouter) {
-        console.warn('[Model Engine] OpenRouter key missing. Falling back to Groq for execution.');
-        selectedMode = 'chat';
-    }
-    if (selectedMode === 'study' && !KEYS.gemini) {
-        console.warn('[Model Engine] Gemini key missing. Falling back to Groq for execution.');
-        selectedMode = 'chat';
-    }
-    if (selectedMode === 'chat' && !KEYS.groq) {
-        console.warn('[Model Engine] Groq key missing. Attempting fallback model provider.');
-        if (KEYS.gemini) {
-            selectedMode = 'study';
-        } else if (KEYS.openrouter) {
-            selectedMode = 'code';
-        } else {
-            throw new Error('All model API credentials (Groq, Gemini, OpenRouter) are missing.');
-        }
-    }
-
-    switch(selectedMode) {
-        case 'code':
-            console.log(`[Model Engine] Code mode. Routing to OpenRouter...`);
-            const openRouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
-            const openRouterResponse = await fetch(openRouterUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${KEYS.openrouter}`,
-                    'HTTP-Referer': 'https://joes-ai-server.onrender.com',
-                    'X-Title': 'Joes AI Workspace'
-                },
-                body: JSON.stringify({
-                    model: 'openrouter/free',
-                    messages: [
-                        { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` },
-                        { role: 'user', content: `User Request: ${message}\n\nUse the search results above to provide an accurate, polished response.` }
-                    ]
-                })
-            });
-
-            const openRouterData = await openRouterResponse.json();
-            if (!openRouterResponse.ok) {
-                console.error('[Model Engine] OpenRouter Error:', openRouterData);
-                throw new Error(openRouterData?.error?.message || `OpenRouter HTTP error! status: ${openRouterResponse.status}`);
-            }
-
-            if (openRouterData && openRouterData.choices && Array.isArray(openRouterData.choices) && openRouterData.choices.length > 0 && openRouterData.choices[0]?.message?.content) {
-                return openRouterData.choices[0].message.content;
-            }
-            throw new Error('OpenRouter response body missing choices array payload.');
-
-        case 'study':
-            console.log(`[Model Engine] Study mode. Routing to Gemini...`);
-            const studyGeminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
-            const studyParts = [{ 
+        try {
+            if (!KEYS.gemini) throw new Error('Gemini API Key is missing.');
+            console.log(`[Model Engine] Attachments detected. Routing to Gemini for file analysis...`);
+            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
+            
+            const parts = [{ 
                 text: `${systemPrompt}\n\n` +
                       `User Request: ${message}\n` +
                       `Search Results: ${contextString}\n\n` +
-                      `Please use the search results above to provide an accurate, structured academic response with diagrams and quiz questions where appropriate.`
+                      `[ATTACHMENTS DETECTED - ANALYZE THESE FILES]\n\n` +
+                      `Please analyze the attached files and incorporate your findings into your response.`
             }];
-            const studyResponse = await fetch(studyGeminiUrl, {
+
+            attachments.forEach(att => {
+                if (att.fileData && att.mimeType) {
+                    parts.push({
+                        inline_data: {
+                            mime_type: att.mimeType,
+                            data: att.fileData
+                        }
+                    });
+                }
+            });
+
+            const response = await fetch(geminiUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    contents: [{ role: 'user', parts: studyParts }],
+                    contents: [{ role: 'user', parts }],
                     systemInstruction: { parts: [{ text: systemPrompt }] }
                 })
             });
-            const studyData = await studyResponse.json();
-            if (!studyResponse.ok) {
-                console.error('[Model Engine] Gemini Study Call Failed:', studyData);
-                throw new Error(studyData.error?.message || `Gemini Study API returned status ${studyResponse.status}`);
-            }
-            return studyData.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request structure.";
 
-        case 'chat':
-        default:
-            console.log(`[Model Engine] Chat mode. Routing to Groq...`);
-            const groqUrl = 'https://api.groq.com/openai/v1/chat/completions';
-            const groqResponse = await fetch(groqUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${KEYS.groq}`
-                },
-                body: JSON.stringify({
-                    model: 'llama-3.3-70b-versatile',
-                    messages: [
-                        { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` },
-                        { role: 'user', content: `User Request: ${message}\n\nUse the search results above to provide an accurate, polished response.` }
-                    ]
-                })
-            });
-
-            const groqData = await groqResponse.json();
-            if (!groqResponse.ok) {
-                console.error('[Model Engine] Groq Error:', groqData);
-                throw new Error(groqData?.error?.message || `Groq HTTP error! status: ${groqResponse.status}`);
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error?.message || `Gemini Multimodal REST API returned status ${response.status}`);
             }
 
-            if (groqData && groqData.choices && Array.isArray(groqData.choices) && groqData.choices.length > 0 && groqData.choices[0]?.message?.content) {
-                return groqData.choices[0].message.content;
-            }
-            throw new Error('Groq response body missing choices array payload.');
+            return data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request structure.";
+        } catch (err) {
+            console.error('[Model Engine] Gemini Multimodal attempt encountered an error:', err.message);
+            console.log('[Model Engine] Attempting text-only fallback waterfall queue with other providers...');
+            // Fall through to the text waterfall completion loop instead of throwing a hard crash
+        }
     }
+
+    // Assemble prioritized fallback queue based on the active mode
+    const generationWaterfall = [];
+
+    if (mode === 'code') {
+        generationWaterfall.push({ name: 'OpenRouter', call: () => callOpenRouter(systemPrompt, contextString, message) });
+        generationWaterfall.push({ name: 'Groq', call: () => callGroq(systemPrompt, contextString, message) });
+        generationWaterfall.push({ name: 'Gemini (Study Fallback)', call: () => callGeminiStudy(systemPrompt, contextString, message) });
+    } else if (mode === 'study') {
+        generationWaterfall.push({ name: 'Gemini (Flash)', call: () => callGeminiStudy(systemPrompt, contextString, message) });
+        generationWaterfall.push({ name: 'Groq', call: () => callGroq(systemPrompt, contextString, message) });
+        generationWaterfall.push({ name: 'OpenRouter', call: () => callOpenRouter(systemPrompt, contextString, message) });
+    } else {
+        // Chat mode and default fallbacks
+        generationWaterfall.push({ name: 'Groq', call: () => callGroq(systemPrompt, contextString, message) });
+        generationWaterfall.push({ name: 'Gemini (Study Fallback)', call: () => callGeminiStudy(systemPrompt, contextString, message) });
+        generationWaterfall.push({ name: 'OpenRouter', call: () => callOpenRouter(systemPrompt, contextString, message) });
+    }
+
+    // Sequentially evaluate waterfall providers 
+    let recordedError = null;
+    for (const provider of generationWaterfall) {
+        try {
+            console.log(`[Model Engine] Dispatching generation thread to provider: ${provider.name}`);
+            const result = await provider.call();
+            console.log(`[Model Engine] Dispatch Successful! Completed via provider: ${provider.name}`);
+            return result;
+        } catch (err) {
+            console.warn(`[Model Engine] Provider [${provider.name}] failed during execution step:`, err.message);
+            recordedError = err;
+            // Catch error and gracefully iterate to the next fallback option in line
+        }
+    }
+
+    // If execution falls through this loop, all API providers have failed
+    throw new Error(`All available completion providers in waterfall have failed. Last recorded exception: ${recordedError ? recordedError.message : 'Unknown'}`);
 }
 
 // -----------------------------------------------------------
