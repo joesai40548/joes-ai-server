@@ -218,6 +218,7 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
     const contextString = JSON.stringify(searchResults, null, 2);
     const hasAttachments = attachments && attachments.length > 0;
 
+    // Attachments always route to Gemini for parsing and multi-modal handling
     if (hasAttachments) {
         if (!KEYS.gemini) {
             throw new Error('Gemini API Key is missing. Cannot process attachments.');
@@ -254,9 +255,15 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
         });
 
         const data = await response.json();
-        return data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request.";
+        if (!response.ok) {
+            console.error('[Model Engine] Gemini Attachment Call Failed:', data);
+            throw new Error(data.error?.message || `Gemini API returned status ${response.status}`);
+        }
+
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request structure.";
     }
 
+    // Determine target mode dynamically with graceful environment fallback
     let selectedMode = mode;
     if (selectedMode === 'code' && !KEYS.openrouter) {
         console.warn('[Model Engine] OpenRouter key missing. Falling back to Groq for execution.');
@@ -327,7 +334,11 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
                 })
             });
             const studyData = await studyResponse.json();
-            return studyData.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request.";
+            if (!studyResponse.ok) {
+                console.error('[Model Engine] Gemini Study Call Failed:', studyData);
+                throw new Error(studyData.error?.message || `Gemini Study API returned status ${studyResponse.status}`);
+            }
+            return studyData.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request structure.";
 
         case 'chat':
         default:
@@ -361,7 +372,9 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
     }
 }
 
-// --- KOOFR WEBDAV ROUTE: LIST ALL SAVED CHAT SESSIONS ---
+// -----------------------------------------------------------
+// KOOFR WEBDAV ROUTE: LIST ALL SAVED CHAT SESSIONS
+// -----------------------------------------------------------
 app.get('/api/chats', async (req, res) => {
     const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
@@ -415,7 +428,9 @@ app.get('/api/chats', async (req, res) => {
     }
 });
 
-// --- KOOFR WEBDAV ROUTE: LOAD SPECIFIC CHAT CONTENT ---
+// -----------------------------------------------------------
+// KOOFR WEBDAV ROUTE: LOAD SPECIFIC CHAT CONTENT
+// -----------------------------------------------------------
 app.get('/api/chats/:filename', async (req, res) => {
     const filename = getSafeFilename(req.params.filename);
     if (!filename) {
@@ -449,7 +464,9 @@ app.get('/api/chats/:filename', async (req, res) => {
     }
 });
 
-// --- KOOFR WEBDAV ROUTE: SAVE/UPDATE CHAT FILE ---
+// -----------------------------------------------------------
+// KOOFR WEBDAV ROUTE: SAVE/UPDATE CHAT FILE
+// -----------------------------------------------------------
 app.post('/api/chats', async (req, res) => {
     const { sessionId, title, history } = req.body;
     const baseUrl = getKoofrBaseUrl();
@@ -491,7 +508,9 @@ app.post('/api/chats', async (req, res) => {
     }
 });
 
-// --- KOOFR WEBDAV ROUTE: RENAME SPECIFIC FILE ---
+// -----------------------------------------------------------
+// KOOFR WEBDAV ROUTE: RENAME SPECIFIC FILE
+// -----------------------------------------------------------
 app.post('/api/chats/rename', async (req, res) => {
     const { oldFilename, sessionId, newTitle } = req.body;
     const baseUrl = getKoofrBaseUrl();
@@ -536,7 +555,9 @@ app.post('/api/chats/rename', async (req, res) => {
     }
 });
 
-// --- KOOFR WEBDAV ROUTE: DELETE CHAT SESSION ---
+// -----------------------------------------------------------
+// KOOFR WEBDAV ROUTE: DELETE CHAT SESSION
+// -----------------------------------------------------------
 app.delete('/api/chats/:filename', async (req, res) => {
     const filename = getSafeFilename(req.params.filename);
     if (!filename) {
@@ -569,7 +590,9 @@ app.delete('/api/chats/:filename', async (req, res) => {
     }
 });
 
-// --- PDF EXPORT ROUTE: Generate true PDF binary from chat history ---
+// -----------------------------------------------------------
+// PDF EXPORT ROUTE: Generate true PDF binary from chat history
+// -----------------------------------------------------------
 app.get('/api/chats/:filename/pdf', async (req, res) => {
     const filename = getSafeFilename(req.params.filename);
     if (!filename) {
@@ -599,6 +622,7 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
         const history = chatData.history || [];
         const chatTitle = chatData.title || 'Chat Export';
 
+        // Compile the Document Content Structure 
         const docContent = [
             { text: chatTitle, style: 'header' },
             { text: `Exported on: ${new Date().toLocaleString()}`, style: 'subHeader' },
@@ -606,6 +630,7 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
             { text: '\n' }
         ];
 
+        // Iterate dynamically over chat context frames
         history.forEach(msg => {
             const isUser = msg.role === 'user';
             
@@ -619,12 +644,14 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
                 style: 'messageBody'
             });
 
+            // Thin separation divider rule
             docContent.push({ 
                 canvas: [{ type: 'line', x1: 0, y1: 10, x2: 515, y2: 10, lineWidth: 0.5, color: '#f0f0f0' }] 
             });
             docContent.push({ text: '\n' });
         });
 
+        // Define formatting styles targeting standard base fonts
         const docDefinition = {
             content: docContent,
             defaultStyle: {
@@ -644,13 +671,13 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
                 userLabel: {
                     fontSize: 11,
                     bold: true,
-                    color: '#2563eb', 
+                    color: '#2563eb', // Clean Blue
                     margin: [0, 5, 0, 2]
                 },
                 aiLabel: {
                     fontSize: 11,
                     bold: true,
-                    color: '#059669', 
+                    color: '#059669', // Emerald Green
                     margin: [0, 5, 0, 2]
                 },
                 messageBody: {
@@ -662,6 +689,7 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
             }
         };
 
+        // Create binary stream architecture and output response payload safely
         const pdfDoc = printer.createPdfKitDocument(docDefinition);
         const cleanDownloadName = filename.replace('.json', '.pdf');
         
@@ -684,7 +712,9 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
     }
 });
 
-// --- ADAPTIVE GEMINI ROUTE (Handles Text & Media Upload split) ---
+// -----------------------------------------------------------
+// ADAPTIVE GEMINI ROUTE (Handles Text & Media Upload split)
+// -----------------------------------------------------------
 app.post('/api/gemini', async (req, res) => {
     const { message, fileData, mimeType, mode, chatHistory } = req.body;
     const API_KEY = process.env.GEMINI_API_KEY;
@@ -740,7 +770,7 @@ app.post('/api/gemini', async (req, res) => {
             });
         }
 
-        const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request.";
+        const aiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request structure.";
         res.json({ text: aiResponse });
 
     } catch (err) {
@@ -749,7 +779,9 @@ app.post('/api/gemini', async (req, res) => {
     }
 });
 
-// --- YOUTUBE SEARCH ROUTE ---
+// -----------------------------------------------------------
+// YOUTUBE SEARCH ROUTE
+// -----------------------------------------------------------
 app.post('/api/youtube/search', async (req, res) => {
     try {
         const { query, maxResults = 5 } = req.body;
@@ -761,7 +793,9 @@ app.post('/api/youtube/search', async (req, res) => {
     }
 });
 
-// --- GOOGLE DRIVE ROUTE: List Files (using direct fetch) ---
+// -----------------------------------------------------------
+// GOOGLE DRIVE ROUTE: List Files (using direct fetch)
+// -----------------------------------------------------------
 app.get('/api/drive/files', async (req, res) => {
     const API_KEY = process.env.GOOGLE_DRIVE_API_KEY;
     if (!API_KEY) {
@@ -782,7 +816,9 @@ app.get('/api/drive/files', async (req, res) => {
     }
 });
 
-// --- ADAPTIVE CHAT ROUTE (Utilizes single-model responses with Tavily / YouTube Integration) ---
+// -----------------------------------------------------------
+// ADAPTIVE CHAT ROUTE (Utilizes single-model responses with Tavily / YouTube Integration)
+// -----------------------------------------------------------
 app.post('/api/chat', async (req, res) => {
     try {
         const { messages, mode } = req.body;
@@ -792,7 +828,7 @@ app.post('/api/chat', async (req, res) => {
             ? userMessages[userMessages.length - 1].content
             : 'General inquiry';
 
-        // GUARD RAIL: Skip search engine execution for simple conversational greetings or short commands
+        // Guardrail: Skip search engine for basic greetings or short conversational inputs
         const isGreeting = /^(hi|hello|hey|hola|greetings|yo|sup|good\s*(morning|afternoon|evening))[\s!.]*$/i.test(latestUserMessage.trim());
         const isTooShort = latestUserMessage.trim().length <= 3;
         const needsSearch = !isGreeting && !isTooShort;
@@ -801,6 +837,11 @@ app.post('/api/chat', async (req, res) => {
             search_items: [],
             visual_assets: []
         };
+
+        const hasAttachments = messages?.some(m => m.attachments?.length > 0);
+        const attachments = hasAttachments
+            ? messages.filter(m => m.attachments?.length > 0).flatMap(m => m.attachments)
+            : [];
 
         if (needsSearch) {
             let searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || latestUserMessage;
@@ -838,6 +879,7 @@ app.post('/api/chat', async (req, res) => {
                 })
             ];
 
+            // Gathers visual sources (YouTube thumbnails and top-level Tavily related web images)
             const topicImages = [
                 ...(tavilyResults.images || []),
                 ...(youtubeResults.videos || []).map(v => v.thumbnail).filter(Boolean)
@@ -848,14 +890,9 @@ app.post('/api/chat', async (req, res) => {
 
             console.log(`[Search] Combined ${textResults.length} text items & ${topicImages.length} visual resources.`);
         } else {
-            console.log(`[Search] Skipped query extraction. Processing direct text response for: "${latestUserMessage}"`);
+            console.log(`[Search] Skipped query extraction. Processing direct text response for conversational intent: "${latestUserMessage}"`);
         }
-
-        const hasAttachments = messages?.some(m => m.attachments?.length > 0);
-        const attachments = hasAttachments
-            ? messages.filter(m => m.attachments?.length > 0).flatMap(m => m.attachments)
-            : [];
-
+        
         const responseText = await executeSingleModelResponse(latestUserMessage, mode, combinedContext, attachments);
 
         res.json({ text: responseText });
@@ -866,7 +903,9 @@ app.post('/api/chat', async (req, res) => {
     }
 });
 
-// --- ADMIN CHECK ROUTE ---
+// -----------------------------------------------------------
+// ADMIN CHECK ROUTE
+// -----------------------------------------------------------
 app.post('/api/check-admin', (req, res) => {
     const { email } = req.body;
     const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
