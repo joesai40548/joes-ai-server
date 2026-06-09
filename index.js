@@ -80,7 +80,7 @@ function getSystemPrompt(mode) {
         "1. TABLES: MUST format as clean Markdown (| Column | Column |)\n" +
         "2. DIAGRAMS & VISUALS: Generate Mermaid or real images ![Alt text](image_url)\n" +
         "3. STRUCTURED OUTPUT: Clear headings, bullet points. No filler text.\n" +
-        "4. CITATIONS: Include inline images or references. Use reliable sources.";
+        "4. CITATIONS: Include inline references. Use reliable sources.";
 
     switch(mode) {
         case 'code':
@@ -100,36 +100,87 @@ const getKoofrBaseUrl = () => {
 };
 
 /**
- * METHOD 2: LLM Intent Classifier Guard Rail
- * Analyzes whether the user prompt genuinely requires real-time search engine data.
+ * CORE MODIFICATION 1 & 4: ADVANCED SEMANTIC ROUTING MATRIX
+ * Classifies intent and determines whether web search/video injection is required.
  */
-async function checkSearchIntent(userMessage) {
-    if (!KEYS.gemini) return true; // Fallback to search if API key missing
+async function evaluateSemanticRoute(userMessage) {
+    if (!KEYS.gemini) {
+        return { intent: 'chat', needsSearch: true }; // Resilient fallback
+    }
     
     try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
-        const classificationPrompt = 
-            "Analyze the following user input message. Determine if answering it requires an external web search or live up-to-date data (e.g., current events, news, specific video searches, weather, lyrics lookups, or live facts)." +
-            "\n\nRespond with exactly 'TRUE' if it requires a web search, or exactly 'FALSE' if it is a simple greeting, casual conversation, math calculation, or regular code block request that can be answered from base knowledge." +
-            "\n\nDo not include any punctuation, formatting, or explanation. Only return 'TRUE' or 'FALSE'." +
-            `\n\nUser Input: "${userMessage}"`;
+        const routingPrompt = 
+            "Analyze the following user query. Categorize it into one of three operational intents:\n" +
+            "1. 'code' - if requesting software architecture, debugging, compilation fixing, scripting, or syntax blocks.\n" +
+            "2. 'study' - if requesting deep academic research, historical timelines, mathematical proofs, or study guides.\n" +
+            "3. 'chat' - for greetings, casual small talk, philosophical views, or direct opinion responses.\n\n" +
+            "Additionally, declare if answering it properly requires an external real-time web search or video lookups for up-to-date facts, current news, live definitions, or specific media.\n\n" +
+            "Respond strictly with a valid JSON string matching this signature: {\"intent\": \"code\"|\"study\"|\"chat\", \"needsSearch\": true|false}. Do not use markdown wraps or extra descriptions.";
 
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                contents: [{ role: 'user', parts: [{ text: classificationPrompt }] }]
+                contents: [{ role: 'user', parts: [{ text: `${routingPrompt}\n\nUser Input: "${userMessage}"` }] }]
             })
         });
 
         const data = await response.json();
-        const classification = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim().toUpperCase() || "FALSE";
+        let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
         
-        console.log(`[Intent Classifier] Message: "${userMessage}" -> Requires Search? [${classification}]`);
-        return classification.includes("TRUE");
+        // Clean markdown backticks if returned accidentally
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        const parsed = JSON.parse(rawText);
+        
+        console.log(`[Semantic Router] Classified Input: "${userMessage}" -> `, parsed);
+        return {
+            intent: parsed.intent || 'chat',
+            needsSearch: !!parsed.needsSearch
+        };
     } catch (err) {
-        console.error('[Intent Classifier] Error executing check, defaulting to true:', err.message);
-        return true; 
+        console.warn('[Semantic Router] Evaluation exception, executing default fallback:', err.message);
+        return { intent: 'chat', needsSearch: true };
+    }
+}
+
+/**
+ * CORE MODIFICATION 2: KEYWORD SYNTHESIZER (DYNAMIC MEMORY RECONSTRUCTION)
+ * Synthesizes long conversation histories into an optimized search query.
+ */
+async function synthesizeSearchQuery(messages, latestUserMessage) {
+    if (!KEYS.gemini || !messages || messages.length <= 1) {
+        return latestUserMessage;
+    }
+
+    try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
+        const historySlice = messages.slice(-5).map(m => `${m.role}: ${m.content}`).join('\n');
+        
+        const synthesisPrompt = 
+            "Analyze the recent chat history transcript and the latest request. Synthesize a concentrated, high-relevance search engine query string (max 6-8 words) that extracts the underlying technical entities, concepts, or current affairs requiring lookup. Avoid phrases like 'search for' or punctuation symbols.\n\n" +
+            `--- CONVERSATION HISTORY ---\n${historySlice}\n\n` +
+            `Latest Request: "${latestUserMessage}"`;
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ role: 'user', parts: [{ text: synthesisPrompt }] }]
+            })
+        });
+
+        const data = await response.json();
+        const extractedQuery = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        
+        if (extractedQuery) {
+            console.log(`[Context Synthesizer] Dynamic summary built: "${extractedQuery}"`);
+            return extractedQuery;
+        }
+        return latestUserMessage;
+    } catch (err) {
+        console.error('[Context Synthesizer] Extraction failed, using base fallback:', err.message);
+        return latestUserMessage;
     }
 }
 
@@ -239,15 +290,18 @@ async function fetchYoutubeSearch(query, maxResults = 5) {
 }
 
 /**
- * SINGLE MODEL RESPONSE ENGINE
+ * CORE MODIFICATION 3: FAULT-TOLERANT CASCADING BACKUP MATRIX (Single Mode Pass)
  */
 async function executeSingleModelResponse(message, mode, searchResults, attachments = []) {
     const systemPrompt = getSystemPrompt(mode);
     const contextString = JSON.stringify(searchResults, null, 2);
     const hasAttachments = attachments && attachments.length > 0;
 
+    // A. Multi-Modal Branch handling local attachment media injections
     if (hasAttachments) {
-        console.log(`[Model Engine] Attachments detected. Routing to Gemini for file analysis...`);
+        if (!KEYS.gemini) throw new Error("Gemini API Key missing required for local file data payloads.");
+        
+        console.log(`[Model Engine] Attachments detected. Routing directly to Gemini execution layer...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
         
         const parts = [{ 
@@ -261,10 +315,7 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
         attachments.forEach(att => {
             if (att.fileData && att.mimeType) {
                 parts.push({
-                    inline_data: {
-                        mime_type: att.mimeType,
-                        data: att.fileData
-                    }
+                    inline_data: { mime_type: att.mimeType, data: att.fileData }
                 });
             }
         });
@@ -279,14 +330,16 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
         });
 
         const data = await response.json();
-        return data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request.";
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this file request.";
     }
 
-    switch(mode) {
-        case 'code':
-            console.log(`[Model Engine] Code mode. Routing to OpenRouter...`);
-            const openRouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
-            const openRouterResponse = await fetch(openRouterUrl, {
+    // B. Semantic Pipeline Cascading (With autonomous API runtime level fallback matrix)
+    if (mode === 'code') {
+        try {
+            console.log(`[Model Engine: Code] Attempting OpenRouter primary broker...`);
+            if (!KEYS.openrouter) throw new Error("OpenRouter credentials unavailable.");
+            
+            const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -303,71 +356,104 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
                 })
             });
 
-            const openRouterData = await openRouterResponse.json();
-            if (!openRouterResponse.ok) {
-                console.error('[Model Engine] OpenRouter Error:', openRouterData);
-                throw new Error(openRouterData?.error?.message || `OpenRouter HTTP error! status: ${openRouterResponse.status}`);
+            const data = await response.json();
+            if (response.ok && data.choices?.[0]?.message?.content) {
+                return data.choices[0].message.content;
             }
+            throw new Error(data?.error?.message || "OpenRouter compilation trace rejected payload.");
+        } catch (err) {
+            console.warn(`[Model Engine Fallback] OpenRouter pipeline down. Cascading to Groq execution line:`, err.message);
+            if (!KEYS.groq) throw new Error("Cascade broke: Groq execution framework not initialized.");
+            
+            const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${KEYS.groq}` },
+                body: JSON.stringify({
+                    model: 'llama-3.3-70b-specdec',
+                    messages: [
+                        { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` },
+                        { role: 'user', content: message }
+                    ]
+                })
+            });
+            const data = await response.json();
+            return data.choices?.[0]?.message?.content || "Fault handling layer failed to safely process request.";
+        }
+    }
 
-            if (openRouterData && openRouterData.choices && Array.isArray(openRouterData.choices) && openRouterData.choices.length > 0 && openRouterData.choices[0]?.message?.content) {
-                return openRouterData.choices[0].message.content;
-            }
-            throw new Error('OpenRouter response body missing choices array payload.');
-
-        case 'study':
-            console.log(`[Model Engine] Study mode. Routing to Gemini...`);
-            const studyGeminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
-            const studyParts = [{ 
-                text: `${systemPrompt}\n\n` +
-                      `User Request: ${message}\n` +
-                      `Search Results: ${contextString}\n\n` +
-                      `Please use the search results above to provide an accurate, structured academic response with diagrams and quiz questions where appropriate.`
-            }];
-            const studyResponse = await fetch(studyGeminiUrl, {
+    if (mode === 'study') {
+        try {
+            console.log(`[Model Engine: Study] Dispatching primary academic framework via Gemini...`);
+            if (!KEYS.gemini) throw new Error("Gemini infrastructure keys not configured.");
+            
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    contents: [{ role: 'user', parts: studyParts }],
+                    contents: [{ role: 'user', parts: [{ text: `${systemPrompt}\n\nUser Request: ${message}\n\nSearch Results:\n${contextString}` }] }],
                     systemInstruction: { parts: [{ text: systemPrompt }] }
                 })
             });
-            const studyData = await studyResponse.json();
-            return studyData.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request.";
-
-        case 'chat':
-        default:
-            console.log(`[Model Engine] Chat mode. Routing to Groq...`);
-            const groqUrl = 'https://api.groq.com/openai/v1/chat/completions';
-            const groqResponse = await fetch(groqUrl, {
+            const data = await response.json();
+            if (response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
+                return data.candidates[0].content.parts[0].text;
+            }
+            throw new Error(data.error?.message || "Gemini Core rejected semantic structure.");
+        } catch (err) {
+            console.warn(`[Model Engine Fallback] Study model failed, cascading directly to Groq pipeline:`, err.message);
+            const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${KEYS.groq}`
-                },
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${KEYS.groq}` },
                 body: JSON.stringify({
                     model: 'llama-3.3-70b-versatile',
                     messages: [
                         { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` },
-                        { role: 'user', content: `User Request: ${message}\n\nUse the search results above to provide an accurate, polished response.` }
+                        { role: 'user', content: message }
                     ]
                 })
             });
+            const data = await response.json();
+            return data.choices?.[0]?.message?.content || "Academic runtime cascade exception.";
+        }
+    }
 
-            const groqData = await groqResponse.json();
-            if (!groqResponse.ok) {
-                console.error('[Model Engine] Groq Error:', groqData);
-                throw new Error(groqData?.error?.message || `Groq HTTP error! status: ${groqResponse.status}`);
-            }
-
-            if (groqData && groqData.choices && Array.isArray(groqData.choices) && groqData.choices.length > 0 && groqData.choices[0]?.message?.content) {
-                return groqData.choices[0].message.content;
-            }
-            throw new Error('Groq response body missing choices array payload.');
+    // Default Chat Routing Pipeline (Groq Base Pipeline)
+    try {
+        console.log(`[Model Engine: Chat] Engaging primary standard Groq engine layer...`);
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${KEYS.groq}` },
+            body: JSON.stringify({
+                model: 'llama-3.3-70b-versatile',
+                messages: [
+                    { role: 'system', content: `${systemPrompt}\n\nSearch Context:\n${contextString}` },
+                    { role: 'user', content: message }
+                ]
+            })
+        });
+        const data = await response.json();
+        if (response.ok && data.choices?.[0]?.message?.content) {
+            return data.choices[0].message.content;
+        }
+        throw new Error(data.error?.message || "Groq frame exception.");
+    } catch (err) {
+        console.warn(`[Model Engine Fallback] Primary Chat pipeline hit limit. Running emergency fallback to Gemini:`, err.message);
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ role: 'user', parts: [{ text: `${systemPrompt}\n\nUser Request: ${message}\n\nSearch Context:\n${contextString}` }] }]
+            })
+        });
+        const data = await response.json();
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || "System structural failure.";
     }
 }
 
 /**
- * CASCADING MULTI-MODEL DISCUSSION ENGINE
+ * CORE MODIFICATION 3 (Continued): CASCADING MULTI-MODEL DISCUSSION ENGINE (Thread Chain Pass)
  */
 async function executeDiscussionChain(message, mode, searchResults, attachments = []) {
     const systemPrompt = getSystemPrompt(mode);
@@ -375,21 +461,16 @@ async function executeDiscussionChain(message, mode, searchResults, attachments 
     const hasAttachments = attachments && attachments.length > 0;
 
     const modeConfig = MODELS[mode] || MODELS.chat;
+    let groqResponse = "Primary synthesis skipped or unexecuted.";
+    let geminiResponse = "Peer augmentation skipped or unexecuted.";
 
-    let groqResponse = "";
-    let geminiResponse = "";
-
-    // STAGE 1: PRIMARY ANALYSIS FRAME (Groq / OpenRouter)
-    if (!hasAttachments && modeConfig.groq) {
+    // STAGE 1: PRIMARY PIPELINE BLOCK (Groq Framework Analysis)
+    if (!hasAttachments && modeConfig.groq && KEYS.groq) {
         try {
-            console.log(`[Discussion Chain] Stage 1: Initial pass via ${modeConfig.groq}...`);
-            const groqUrl = 'https://api.groq.com/openai/v1/chat/completions';
-            const response = await fetch(groqUrl, {
+            console.log(`[Discussion Chain] Stage 1: Initiating layout via ${modeConfig.groq}...`);
+            const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${KEYS.groq}`
-                },
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${KEYS.groq}` },
                 body: JSON.stringify({
                     model: modeConfig.groq,
                     messages: [
@@ -398,85 +479,63 @@ async function executeDiscussionChain(message, mode, searchResults, attachments 
                     ]
                 })
             });
-
             const data = await response.json();
             if (response.ok && data.choices?.[0]?.message?.content) {
                 groqResponse = data.choices[0].message.content;
-                console.log("[Discussion Chain] Stage 1 Complete.");
-            } else {
-                console.warn("[Discussion Chain] Stage 1 Base layer response failed or returned empty payload.");
-                groqResponse = "Primary stage pass yielded no response metrics.";
             }
         } catch (err) {
-            console.error("Discussion Stage 1 (Groq) Error:", err);
-            groqResponse = "Primary synthesis phase bypassed due to error pipeline.";
+            console.warn("[Discussion Chain] Stage 1 passed with execution errors, running alternative line:", err.message);
         }
-    } else {
-        console.log("[Discussion Chain] No Groq model configured for this mode, skipping to Gemini...");
     }
 
-    // STAGE 2: GEMINI ANALYSIS & DISCUSSION PASS
-    try {
-        console.log(`[Discussion Chain] Stage 2: Gemini direct peer discussion via ${modeConfig.gemini}...`);
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modeConfig.gemini}:generateContent?key=${KEYS.gemini}`;
-        
-        const parts = [{ 
-            text: `${systemPrompt}\n\n` +
-                  `You are the second engine in a multi-model discussion. Here is the context:\n` +
-                  `User Request: ${message}\n` +
-                  `Tavily Search Results: ${contextString}\n\n`
-        }];
+    // STAGE 2: PEER EXPANSION AND FORMATTING COMPONENT BLOCK (Gemini Core Generation)
+    if (KEYS.gemini) {
+        try {
+            console.log(`[Discussion Chain] Stage 2: Triggering Gemini enhancement via ${modeConfig.gemini}...`);
+            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modeConfig.gemini}:generateContent?key=${KEYS.gemini}`;
+            
+            const parts = [{ 
+                text: `${systemPrompt}\n\nYou are the second engine in a multi-model discussion. Here is the context:\n` +
+                      `User Request: ${message}\n` +
+                      `Tavily Search Results: ${contextString}\n\n`
+            }];
 
-        if (hasAttachments) {
-            parts.push(`\n\n[ATTACHMENTS DETECTED - ANALYZE THESE FILES]`);
-        }
+            const geminiContents = [{ role: 'user', parts: [{ text: parts[0].text }] }];
 
-        const geminiContents = [{
-            role: 'user',
-            parts: [{ 
-                text: parts[0].text
-            }]
-        }];
+            attachments.forEach(att => {
+                if (att.fileData && att.mimeType) {
+                    geminiContents[0].parts.push({
+                        inline_data: { mime_type: att.mimeType, data: att.fileData }
+                    });
+                }
+            });
 
-        attachments.forEach(att => {
-            if (att.fileData && att.mimeType) {
-                geminiContents[0].parts.push({
-                    inline_data: {
-                        mime_type: att.mimeType,
-                        data: att.fileData
-                    }
-                });
+            if (hasAttachments) {
+                geminiContents[0].parts.push({ text: `\n\nPlease analyze the attached files and incorporate your findings into your response.` });
+            } else {
+                geminiContents[0].parts.push({ text: `\n\nThe primary model suggested this framework:\n${groqResponse}\n\nEnhance it, fix errors, verify code correctness, and add clear markdown components.` });
             }
-        });
 
-        if (hasAttachments) {
-            geminiContents[0].parts.push({
-                text: `\n\nPlease analyze the attached files and incorporate your findings into your response.`
+            const response = await fetch(geminiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contents: geminiContents })
             });
-        } else {
-            geminiContents[0].parts.push({
-                text: `\n\nThe primary model (Groq) suggested this solution:\n${groqResponse}\n\nDiscuss this response. Enhance it, build on top of it, and apply your advanced features to format tables, integrate visual markdown graphs, or add rich descriptors.`
-            });
+            const data = await response.json();
+            geminiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "Augmentation stage empty.";
+        } catch (err) {
+            console.warn("[Discussion Chain] Stage 2 broken:", err.message);
+            geminiResponse = groqResponse;
         }
-
-        const response = await fetch(geminiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: geminiContents })
-        });
-
-        const data = await response.json();
-        geminiResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "Gemini peer pass did not augment data structures.";
-        console.log("[Discussion Chain] Stage 2 Complete.");
-    } catch (err) {
-        console.error("Discussion Stage 2 (Gemini) Error:", err);
-        geminiResponse = `Peer analysis exception occurred. Default fallback on base frame: ${hasAttachments ? "No Groq analysis (attachments present)" : groqResponse}`;
     }
 
-    // STAGE 3: OPENROUTER DELIVERER PIECE
+    // STAGE 3: ULTIMATE BROKER CONSOLIDATION AND CLEAN DELIVERY (OpenRouter Delivery Line)
     try {
-        const autoFreeRouterModel = modeConfig.openrouter || 'openrouter/free'; 
-        console.log(`[Discussion Chain] Stage 3: OpenRouter final delivery via dynamic broker (${autoFreeRouterModel})...`);
+        const autoModel = modeConfig.openrouter || 'openrouter/free';
+        console.log(`[Discussion Chain] Stage 3: Directing final delivery consolidation via OpenRouter (${autoModel})...`);
+        
+        if (!KEYS.openrouter) throw new Error("OpenRouter token signature unmapped.");
+
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -486,7 +545,7 @@ async function executeDiscussionChain(message, mode, searchResults, attachments 
                 "X-Title": "Joes AI Workspace"
             },
             body: JSON.stringify({
-                model: autoFreeRouterModel,
+                model: autoModel,
                 messages: [
                     { 
                         role: 'system', 
@@ -496,7 +555,7 @@ async function executeDiscussionChain(message, mode, searchResults, attachments 
                         role: 'user', 
                         content: `User query: ${message}\n\n` +
                                  `--- DISCUSSION ENGINE TRANSCRIPT ---\n` +
-                                 `${hasAttachments ? 'Groq: [SKIPPED - Attachments detected]' : `Groq analysis: ${groqResponse}`}\n\n` +
+                                 `Groq analysis: ${groqResponse}\n\n` +
                                  `Gemini augmentation: ${geminiResponse}\n` +
                                  `--- END TRANSCRIPT ---\n\n` +
                                  `Deliver the polished final response now.`
@@ -506,22 +565,13 @@ async function executeDiscussionChain(message, mode, searchResults, attachments 
         });
 
         const data = await response.json();
-        
-        if (!response.ok) {
-            console.error("[OpenRouter API Error Details]:", data);
-            throw new Error(data?.error?.message || `HTTP error! status: ${response.status}`);
-        }
-
-        if (data && data.choices && Array.isArray(data.choices) && data.choices.length > 0 && data.choices[0]?.message?.content) {
-            console.log("[Discussion Chain] Stage 3 Complete. Final delivery ready via dynamic broker.");
+        if (response.ok && data.choices?.[0]?.message?.content) {
             return data.choices[0].message.content;
         }
-        
-        throw new Error("OpenRouter response body fields missing choices array payload.");
+        throw new Error("OpenRouter payload collection signature dropped.");
     } catch (err) {
-        console.error("Discussion Stage 3 (OpenRouter) Error:", err);
-        console.log("[Discussion Chain Fallback] Serving Gemini response directly due to OpenRouter block or bad signature.");
-        return geminiResponse || "System encounter threshold limitation. Please re-run the thread query.";
+        console.warn("[Discussion Chain] Stage 3 Delivery trace failed. Returning Stage 2 data direct to client safety layer:", err.message);
+        return geminiResponse;
     }
 }
 
@@ -798,38 +848,13 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
         // 3. Define formatting styles targeting standard base fonts
         const docDefinition = {
             content: docContent,
-            defaultStyle: {
-                font: 'Helvetica'
-            },
+            defaultStyle: { font: 'Helvetica' },
             styles: {
-                header: {
-                    fontSize: 22,
-                    bold: true,
-                    color: '#1a1a1a'
-                },
-                subHeader: {
-                    fontSize: 10,
-                    italics: true,
-                    color: '#666666'
-                },
-                userLabel: {
-                    fontSize: 11,
-                    bold: true,
-                    color: '#2563eb', // Clean Blue
-                    margin: [0, 5, 0, 2]
-                },
-                aiLabel: {
-                    fontSize: 11,
-                    bold: true,
-                    color: '#059669', // Emerald Green
-                    margin: [0, 5, 0, 2]
-                },
-                messageBody: {
-                    fontSize: 11,
-                    lineHeight: 1.4,
-                    color: '#374151',
-                    margin: [5, 2, 5, 5]
-                }
+                header: { fontSize: 22, bold: true, color: '#1a1a1a' },
+                subHeader: { fontSize: 10, italics: true, color: '#666666' },
+                userLabel: { fontSize: 11, bold: true, color: '#2563eb', margin: [0, 5, 0, 2] },
+                aiLabel: { fontSize: 11, bold: true, color: '#059669', margin: [0, 5, 0, 2] },
+                messageBody: { fontSize: 11, lineHeight: 1.4, color: '#374151', margin: [5, 2, 5, 5] }
             }
         };
 
@@ -1006,12 +1031,12 @@ app.post('/api/gmail/send', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// ADAPTIVE MULTI-MODEL ROUTES (Both mapped clean with Method 2 integration)
+// ADAPTIVE MULTI-MODEL ROUTES (Both clean-mapped with Matrix Updates)
 // -----------------------------------------------------------
 
-// Route 1 (Single model structure mapping)
+// Route 1 (Single model execution pattern)
 app.post('/api/chat', async (req, res, next) => {
-    // Safety fallback: Check if this payload belongs to the next duplicate route declaration
+    // Safety check: skip to next declaration if explicit attachment configuration exists
     if (req.body.messages && req.body.messages.some(m => m.attachments)) {
          return next(); 
     }
@@ -1024,29 +1049,27 @@ app.post('/api/chat', async (req, res, next) => {
             ? userMessages[userMessages.length - 1].content
             : 'General inquiry';
 
-        let searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || latestUserMessage;
         const hasAttachments = messages?.some(m => m.attachments?.length > 0);
         const attachments = hasAttachments
             ? messages.filter(m => m.attachments?.length > 0).flatMap(m => m.attachments)
             : [];
 
-        if (searchQuery.length > 300) {
-            searchQuery = searchQuery.substring(0, 300) + '...';
-        }
+        // 1. Run Cognitive Semantic Router
+        const routeConfig = await evaluateSemanticRoute(latestUserMessage);
+        
+        // Dynamically shift target operational execution modes if user overrides manual choice
+        const targetMode = mode === 'chat' ? routeConfig.intent : mode;
 
         let combinedResults = [];
-        
-        // METHOD 2: Execute semantic guard rail intent classification
-        const needsWebSearch = await checkSearchIntent(latestUserMessage);
 
-        if (needsWebSearch) {
-            console.log(`[Search Engine] Intent confirmed. Fetching live indices for: "${latestUserMessage}"`);
+        // 2. Conditionally generate and synthesize search query
+        if (routeConfig.needsSearch) {
+            const dynamicSearchQuery = await synthesizeSearchQuery(messages, latestUserMessage);
+            
+            console.log(`[Search Core] Dispatching dynamic query queries for: "${dynamicSearchQuery}"`);
             const [tavilyResults, youtubeResults] = await Promise.all([
-                fetchTavilySearch(searchQuery, 'web', 5),
-                fetchYoutubeSearch(searchQuery, 5).catch(err => {
-                    console.error('[Search] YouTube search failed:', err.message);
-                    return { query: searchQuery, count: 0, videos: [] };
-                })
+                fetchTavilySearch(dynamicSearchQuery, 'web', 5),
+                fetchYoutubeSearch(dynamicSearchQuery, 5).catch(() => ({ videos: [] }))
             ]);
 
             combinedResults = [
@@ -1058,21 +1081,20 @@ app.post('/api/chat', async (req, res, next) => {
                     displayLink: new URL(v.url).hostname
                 }))
             ];
-            console.log(`[Search] Aggregated ${combinedResults.length} search entities successfully.`);
         } else {
-            console.log(`[Search Engine] Intent skipped. Processing natively via downstream models.`);
+            console.log(`[Search Suppressed] Bypassing search tracks for native inference window.`);
         }
         
-        const discussionOutput = await executeSingleModelResponse(latestUserMessage, mode, combinedResults, attachments);
-        res.json({ text: discussionOutput });
+        const output = await executeSingleModelResponse(latestUserMessage, targetMode, combinedResults, attachments);
+        res.json({ text: output });
 
     } catch (error) {
-        console.error('Adaptive multi-model single execution failed:', error);
-        res.status(500).json({ error: 'Multi-model context aggregation error occurred.' });
+        console.error('Adaptive single model routing exception:', error);
+        res.status(500).json({ error: 'Multi-model context processing error.' });
     }
 });
 
-// Route 2 (Cascading Pass mapping setup)
+// Route 2 (Cascading Discussion Chain pattern)
 app.post('/api/chat', async (req, res) => {
     try {
         const { messages, mode } = req.body;
@@ -1082,35 +1104,33 @@ app.post('/api/chat', async (req, res) => {
             ? userMessages[userMessages.length - 1].content
             : 'General inquiry';
 
-        let searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || latestUserMessage;
         const hasAttachments = messages?.some(m => m.attachments?.length > 0);
         const attachments = hasAttachments
             ? messages.filter(m => m.attachments?.length > 0).flatMap(m => m.attachments)
             : [];
 
-        if (searchQuery.length > 300) {
-            searchQuery = searchQuery.substring(0, 300) + '...';
-        }
+        // 1. Run Cognitive Semantic Router
+        const routeConfig = await evaluateSemanticRoute(latestUserMessage);
+        const targetMode = mode === 'chat' ? routeConfig.intent : mode;
 
         let searchItems = [];
-        
-        // METHOD 2: Execute semantic guard rail intent classification
-        const needsWebSearch = await checkSearchIntent(latestUserMessage);
 
-        if (needsWebSearch) {
-            console.log(`[Discussion Chain Search] Intent confirmed. Fetching live context: "${latestUserMessage}"`);
-            const searchResults = await fetchTavilySearch(searchQuery, 'web', 5);
+        // 2. Conditionally summarize and execute web crawl context 
+        if (routeConfig.needsSearch) {
+            const dynamicSearchQuery = await synthesizeSearchQuery(messages, latestUserMessage);
+            console.log(`[Chain Search Core] Running crawl context via: "${dynamicSearchQuery}"`);
+            const searchResults = await fetchTavilySearch(dynamicSearchQuery, 'web', 5);
             searchItems = searchResults.items || [];
         } else {
-            console.log(`[Discussion Chain Search] Intent skipped. Cascading natively without injection context.`);
+            console.log(`[Chain Search Suppressed] Bypassing search tracks for native cascade workspace.`);
         }
 
-        const discussionOutput = await executeDiscussionChain(latestUserMessage, mode, searchItems, attachments);
+        const discussionOutput = await executeDiscussionChain(latestUserMessage, targetMode, searchItems, attachments);
         res.json({ text: discussionOutput });
 
     } catch (error) {
-        console.error('Adaptive multi-model discussion route failed:', error);
-        res.status(500).json({ error: 'Multi-model context aggregation error occurred.' });
+        console.error('Adaptive discussion chain routing exception:', error);
+        res.status(500).json({ error: 'Discussion context processing error.' });
     }
 });
 
