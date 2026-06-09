@@ -113,7 +113,7 @@ function getSystemPrompt(mode) {
         "1. TABLES: MUST use strict GitHub Flavored Markdown. You MUST include the header separator row (e.g., | Header | Header |\n|---|---|). Never output smashed text.\n" +
         "2. DIAGRAMS & VISUALS: Generate Mermaid or real images ![Alt text](image_url). You are provided with direct image URLs and video thumbnails in the search context. If relevant, you MUST display them to the user using Markdown images, for example as a clickable thumbnail: [![Watch Video](thumbnail_url)](video_url) or direct image embeds: ![Topic Image](image_url) to visually enrich your response.\n" +
         "3. STRUCTURED OUTPUT: Clear headings, bullet points. No filler text.\n" +
-        "4. CITATIONS: Include inline references. Use reliable sources.";
+        "4. CITATIONS: Include inline references. Use reliable sources and also never include ##### in responses. ";
 
     switch(mode) {
         case 'code':
