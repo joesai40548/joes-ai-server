@@ -71,6 +71,32 @@ function getSafeFilename(filename) {
 }
 
 /**
+ * Cleans filenames and session names to guarantee valid file creations
+ */
+function getSafeTitleSlug(rawTitle) {
+    const fallback = 'untitled';
+    if (!rawTitle || typeof rawTitle !== 'string') return fallback;
+    return rawTitle
+        .trim()
+        .replace(/[^a-zA-Z0-9]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '') || fallback;
+}
+
+/**
+ * Strips emoji glyphs and unsupported characters to avoid PDFMake rendering errors
+ */
+function sanitizeForPdf(text) {
+    if (typeof text !== 'string') return '';
+    return text
+        .replace(/👤/g, 'User')
+        .replace(/🤖/g, 'Assistant')
+        .replace(/⚡/g, 'Joes AI')
+        .replace(/[\uD800-\uDFFF]./g, '') // Strip standard high-range emoji characters
+        .trim();
+}
+
+/**
  * Custom Adaptive System Prompt Constructor
  */
 function getSystemPrompt(mode) {
@@ -153,7 +179,7 @@ async function callGeminiStudy(systemPrompt, contextString, message) {
     });
     const data = await response.json();
     if (!response.ok) {
-        throw new Error(data.error?.message || `Gemini Study API returned HTTP status ${response.status}`);
+        throw new Error(data?.error?.message || `Gemini Study API returned HTTP status ${response.status}`);
     }
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "Gemini returned empty candidate text content.";
 }
@@ -177,7 +203,8 @@ async function callGroq(systemPrompt, contextString, message) {
     });
 
     const data = await response.json();
-    if (!groqResponse.ok && !response.ok) {
+    // FIX: Replaced non-existent groqResponse variable reference with response
+    if (!response.ok) {
         throw new Error(data?.error?.message || `Groq API returned HTTP status ${response.status}`);
     }
     if (data?.choices?.[0]?.message?.content) {
@@ -272,7 +299,7 @@ async function fetchYoutubeSearch(query, maxResults = 5) {
         const data = await response.json();
 
         if (!response.ok) {
-            console.error('[Search Engine] YouTube API Error:', data.error?.message || data);
+            console.error('[Search Engine] YouTube API Error:', data?.error?.message || data);
             return { query, count: 0, videos: [] };
         }
 
@@ -295,7 +322,7 @@ async function fetchYoutubeSearch(query, maxResults = 5) {
 }
 
 /**
- * SINGLE MODEL RESPONSE ENGINE WITH FAILLOVER WATERFALL
+ * SINGLE MODEL RESPONSE ENGINE WITH FAILOVER WATERFALL
  */
 async function executeSingleModelResponse(message, mode, searchResults, attachments = []) {
     const systemPrompt = getSystemPrompt(mode);
@@ -339,7 +366,7 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
 
             const data = await response.json();
             if (!response.ok) {
-                throw new Error(data.error?.message || `Gemini Multimodal REST API returned status ${response.status}`);
+                throw new Error(data?.error?.message || `Gemini Multimodal REST API returned status ${response.status}`);
             }
 
             return data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request structure.";
@@ -431,7 +458,10 @@ app.get('/api/chats', async (req, res) => {
                 const id = parts[0];
                 const title = parts[1] ? parts[1].replace(/-/g, ' ') : 'Saved Chat';
                 
-                files.push({ id, filename, title });
+                // Deduplicate items to maintain clean rendering inside the UI sidebar
+                if (!files.some(fileObj => fileObj.filename === filename)) {
+                    files.push({ id, filename, title });
+                }
             }
         }
 
@@ -498,8 +528,7 @@ app.post('/api/chats', async (req, res) => {
     }
 
     try {
-        const rawTitle = title || 'untitled';
-        const safeTitle = rawTitle.trim().replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-');
+        const safeTitle = getSafeTitleSlug(title);
         const filename = `JoesAI_Chat_${userId}__${sessionId}__${safeTitle}.json`;
         const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
 
@@ -509,7 +538,7 @@ app.post('/api/chats', async (req, res) => {
                 'Authorization': authHeader,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ sessionId, title: rawTitle, history })
+            body: JSON.stringify({ sessionId, title: title || 'untitled', history })
         });
 
         if (response.ok || response.status === 201 || response.status === 204) {
@@ -547,7 +576,7 @@ app.post('/api/chats/rename', async (req, res) => {
     }
 
     try {
-        const safeTitle = newTitle.trim().replace(/[^a-zA-Z0-9]/g, '-').replace(/-+/g, '-');
+        const safeTitle = getSafeTitleSlug(newTitle);
         const newFilename = `JoesAI_Chat_${userId}__${sessionId}__${safeTitle}.json`;
         const authHeader = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
 
@@ -637,9 +666,9 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
         const history = chatData.history || [];
         const chatTitle = chatData.title || 'Chat Export';
 
-        // Compile the Document Content Structure 
+        // Compile the Document Content Structure safely sanitizing standard core fonts
         const docContent = [
-            { text: chatTitle, style: 'header' },
+            { text: sanitizeForPdf(chatTitle), style: 'header' },
             { text: `Exported on: ${new Date().toLocaleString()}`, style: 'subHeader' },
             { canvas: [{ type: 'line', x1: 0, y1: 5, x2: 515, y2: 5, lineWidth: 1.5, color: '#e0e0e0' }] },
             { text: '\n' }
@@ -650,12 +679,12 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
             const isUser = msg.role === 'user';
             
             docContent.push({
-                text: isUser ? '👤 User' : '🤖 Assistant',
+                text: isUser ? 'User' : 'Assistant',
                 style: isUser ? 'userLabel' : 'aiLabel'
             });
 
             docContent.push({
-                text: msg.content || '',
+                text: sanitizeForPdf(msg.content || ''),
                 style: 'messageBody'
             });
 
@@ -704,9 +733,9 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
             }
         };
 
-        // Create binary stream architecture and output response payload safely
+        // Create binary stream architecture and output response payload safely with sanitized file header headers
         const pdfDoc = printer.createPdfKitDocument(docDefinition);
-        const cleanDownloadName = filename.replace('.json', '.pdf');
+        const cleanDownloadName = filename.replace(/[^a-zA-Z0-9_.-]/g, '_').replace('.json', '.pdf');
         
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="${cleanDownloadName}"`);
@@ -781,7 +810,7 @@ app.post('/api/gemini', async (req, res) => {
         if (!response.ok) {
             console.error('Google API Error Details:', data);
             return res.status(response.status).json({ 
-                error: data.error?.message || 'Google API refused the request.' 
+                error: data?.error?.message || 'Google API refused the request.' 
             });
         }
 
@@ -822,7 +851,7 @@ app.get('/api/drive/files', async (req, res) => {
         const data = await response.json();
         if (!response.ok) {
             console.error('Drive API Error:', data);
-            return res.status(response.status).json({ error: data.error?.message || 'Drive API failed' });
+            return res.status(response.status).json({ error: data?.error?.message || 'Drive API failed' });
         }
         res.json({ files: data.files || [] });
     } catch (err) {
@@ -853,10 +882,15 @@ app.post('/api/chat', async (req, res) => {
             visual_assets: []
         };
 
-        const hasAttachments = messages?.some(m => m.attachments?.length > 0);
-        const attachments = hasAttachments
-            ? messages.filter(m => m.attachments?.length > 0).flatMap(m => m.attachments)
-            : [];
+        // Aggregates both singular or plural attachments array styles dynamically
+        const attachments = [];
+        messages?.forEach(m => {
+            if (m.attachments && Array.isArray(m.attachments)) {
+                attachments.push(...m.attachments);
+            } else if (m.attachment) {
+                attachments.push(m.attachment);
+            }
+        });
 
         if (needsSearch) {
             let searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || latestUserMessage;
