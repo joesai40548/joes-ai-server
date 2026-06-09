@@ -134,7 +134,7 @@ async function fetchTavilySearch(query, searchType = 'web', count = 5) {
                     api_key: activeKey,
                     query: query,
                     search_depth: "basic",
-                    include_images: true, // Fetch source page visuals and diagrams
+                    include_images: true, 
                     max_results: Math.min(Math.max(count, 1), 10)
                 })
             });
@@ -151,13 +151,13 @@ async function fetchTavilySearch(query, searchType = 'web', count = 5) {
                 query,
                 searchType,
                 count: data.results?.length || 0,
-                images: data.images || [], // Gathers query-relevant visual media
+                images: data.images || [], 
                 items: data.results?.map(item => ({
                     title: item.title,
                     link: item.url,
                     snippet: item.content,
                     displayLink: new URL(item.url).hostname,
-                    images: item.images || [] // Capture source-linked specific images
+                    images: item.images || [] 
                 })) || []
             };
 
@@ -218,7 +218,6 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
     const contextString = JSON.stringify(searchResults, null, 2);
     const hasAttachments = attachments && attachments.length > 0;
 
-    // Attachments always route to Gemini for parsing and multi-modal handling
     if (hasAttachments) {
         if (!KEYS.gemini) {
             throw new Error('Gemini API Key is missing. Cannot process attachments.');
@@ -258,7 +257,6 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
         return data.candidates?.[0]?.content?.parts?.[0]?.text || "AI was unable to process this request.";
     }
 
-    // Determine target mode dynamically with graceful environment fallback
     let selectedMode = mode;
     if (selectedMode === 'code' && !KEYS.openrouter) {
         console.warn('[Model Engine] OpenRouter key missing. Falling back to Groq for execution.');
@@ -363,9 +361,7 @@ async function executeSingleModelResponse(message, mode, searchResults, attachme
     }
 }
 
-// -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: LIST ALL SAVED CHAT SESSIONS
-// -----------------------------------------------------------
+// --- KOOFR WEBDAV ROUTE: LIST ALL SAVED CHAT SESSIONS ---
 app.get('/api/chats', async (req, res) => {
     const baseUrl = getKoofrBaseUrl();
     const user = process.env.CLOUDSYNC_USER;
@@ -419,9 +415,7 @@ app.get('/api/chats', async (req, res) => {
     }
 });
 
-// -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: LOAD SPECIFIC CHAT CONTENT
-// -----------------------------------------------------------
+// --- KOOFR WEBDAV ROUTE: LOAD SPECIFIC CHAT CONTENT ---
 app.get('/api/chats/:filename', async (req, res) => {
     const filename = getSafeFilename(req.params.filename);
     if (!filename) {
@@ -455,9 +449,7 @@ app.get('/api/chats/:filename', async (req, res) => {
     }
 });
 
-// -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: SAVE/UPDATE CHAT FILE
-// -----------------------------------------------------------
+// --- KOOFR WEBDAV ROUTE: SAVE/UPDATE CHAT FILE ---
 app.post('/api/chats', async (req, res) => {
     const { sessionId, title, history } = req.body;
     const baseUrl = getKoofrBaseUrl();
@@ -499,9 +491,7 @@ app.post('/api/chats', async (req, res) => {
     }
 });
 
-// -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: RENAME SPECIFIC FILE
-// -----------------------------------------------------------
+// --- KOOFR WEBDAV ROUTE: RENAME SPECIFIC FILE ---
 app.post('/api/chats/rename', async (req, res) => {
     const { oldFilename, sessionId, newTitle } = req.body;
     const baseUrl = getKoofrBaseUrl();
@@ -546,9 +536,7 @@ app.post('/api/chats/rename', async (req, res) => {
     }
 });
 
-// -----------------------------------------------------------
-// KOOFR WEBDAV ROUTE: DELETE CHAT SESSION
-// -----------------------------------------------------------
+// --- KOOFR WEBDAV ROUTE: DELETE CHAT SESSION ---
 app.delete('/api/chats/:filename', async (req, res) => {
     const filename = getSafeFilename(req.params.filename);
     if (!filename) {
@@ -581,9 +569,7 @@ app.delete('/api/chats/:filename', async (req, res) => {
     }
 });
 
-// -----------------------------------------------------------
-// PDF EXPORT ROUTE: Generate true PDF binary from chat history
-// -----------------------------------------------------------
+// --- PDF EXPORT ROUTE: Generate true PDF binary from chat history ---
 app.get('/api/chats/:filename/pdf', async (req, res) => {
     const filename = getSafeFilename(req.params.filename);
     if (!filename) {
@@ -613,7 +599,6 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
         const history = chatData.history || [];
         const chatTitle = chatData.title || 'Chat Export';
 
-        // Compile the Document Content Structure 
         const docContent = [
             { text: chatTitle, style: 'header' },
             { text: `Exported on: ${new Date().toLocaleString()}`, style: 'subHeader' },
@@ -621,7 +606,6 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
             { text: '\n' }
         ];
 
-        // Iterate dynamically over chat context frames
         history.forEach(msg => {
             const isUser = msg.role === 'user';
             
@@ -635,14 +619,12 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
                 style: 'messageBody'
             });
 
-            // Thin separation divider rule
             docContent.push({ 
                 canvas: [{ type: 'line', x1: 0, y1: 10, x2: 515, y2: 10, lineWidth: 0.5, color: '#f0f0f0' }] 
             });
             docContent.push({ text: '\n' });
         });
 
-        // Define formatting styles targeting standard base fonts
         const docDefinition = {
             content: docContent,
             defaultStyle: {
@@ -662,13 +644,13 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
                 userLabel: {
                     fontSize: 11,
                     bold: true,
-                    color: '#2563eb', // Clean Blue
+                    color: '#2563eb', 
                     margin: [0, 5, 0, 2]
                 },
                 aiLabel: {
                     fontSize: 11,
                     bold: true,
-                    color: '#059669', // Emerald Green
+                    color: '#059669', 
                     margin: [0, 5, 0, 2]
                 },
                 messageBody: {
@@ -680,7 +662,6 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
             }
         };
 
-        // Create binary stream architecture and output response payload safely
         const pdfDoc = printer.createPdfKitDocument(docDefinition);
         const cleanDownloadName = filename.replace('.json', '.pdf');
         
@@ -703,9 +684,7 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
     }
 });
 
-// -----------------------------------------------------------
-// ADAPTIVE GEMINI ROUTE (Handles Text & Media Upload split)
-// -----------------------------------------------------------
+// --- ADAPTIVE GEMINI ROUTE (Handles Text & Media Upload split) ---
 app.post('/api/gemini', async (req, res) => {
     const { message, fileData, mimeType, mode, chatHistory } = req.body;
     const API_KEY = process.env.GEMINI_API_KEY;
@@ -770,9 +749,7 @@ app.post('/api/gemini', async (req, res) => {
     }
 });
 
-// -----------------------------------------------------------
-// YOUTUBE SEARCH ROUTE
-// -----------------------------------------------------------
+// --- YOUTUBE SEARCH ROUTE ---
 app.post('/api/youtube/search', async (req, res) => {
     try {
         const { query, maxResults = 5 } = req.body;
@@ -784,9 +761,7 @@ app.post('/api/youtube/search', async (req, res) => {
     }
 });
 
-// -----------------------------------------------------------
-// GOOGLE DRIVE ROUTE: List Files (using direct fetch)
-// -----------------------------------------------------------
+// --- GOOGLE DRIVE ROUTE: List Files (using direct fetch) ---
 app.get('/api/drive/files', async (req, res) => {
     const API_KEY = process.env.GOOGLE_DRIVE_API_KEY;
     if (!API_KEY) {
@@ -807,9 +782,7 @@ app.get('/api/drive/files', async (req, res) => {
     }
 });
 
-// -----------------------------------------------------------
-// ADAPTIVE CHAT ROUTE (Utilizes single-model responses with Tavily / YouTube Integration)
-// -----------------------------------------------------------
+// --- ADAPTIVE CHAT ROUTE (Utilizes single-model responses with Tavily / YouTube Integration) ---
 app.post('/api/chat', async (req, res) => {
     try {
         const { messages, mode } = req.body;
@@ -819,59 +792,70 @@ app.post('/api/chat', async (req, res) => {
             ? userMessages[userMessages.length - 1].content
             : 'General inquiry';
 
-        let searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || latestUserMessage;
+        // GUARD RAIL: Skip search engine execution for simple conversational greetings or short commands
+        const isGreeting = /^(hi|hello|hey|hola|greetings|yo|sup|good\s*(morning|afternoon|evening))[\s!.]*$/i.test(latestUserMessage.trim());
+        const isTooShort = latestUserMessage.trim().length <= 3;
+        const needsSearch = !isGreeting && !isTooShort;
+
+        let combinedContext = {
+            search_items: [],
+            visual_assets: []
+        };
+
+        if (needsSearch) {
+            let searchQuery = messages?.slice(-6)?.map(m => m.content).join(' ') || latestUserMessage;
+            if (searchQuery.length > 300) {
+                searchQuery = searchQuery.substring(0, 300) + '...';
+            }
+
+            console.log(`[Search] Forwarding query to Tavily and YouTube (${searchQuery.length} chars)`);
+            const [tavilyResults, youtubeResults] = await Promise.all([
+                fetchTavilySearch(searchQuery, 'web', 5),
+                fetchYoutubeSearch(searchQuery, 5).catch(err => {
+                    console.error('[Search] YouTube search failed:', err.message);
+                    return { query: searchQuery, count: 0, videos: [] };
+                })
+            ]);
+
+            const textResults = [
+                ...(tavilyResults.items || []),
+                ...(youtubeResults.videos || []).map(v => {
+                    let displayLink = 'youtube.com';
+                    try {
+                        if (v.url) {
+                            displayLink = new URL(v.url).hostname;
+                        }
+                    } catch (e) {
+                        // Safe fallback
+                    }
+                    return {
+                        title: v.title,
+                        link: v.url,
+                        snippet: v.description,
+                        displayLink,
+                        thumbnail: v.thumbnail
+                    };
+                })
+            ];
+
+            const topicImages = [
+                ...(tavilyResults.images || []),
+                ...(youtubeResults.videos || []).map(v => v.thumbnail).filter(Boolean)
+            ];
+
+            combinedContext.search_items = textResults;
+            combinedContext.visual_assets = topicImages;
+
+            console.log(`[Search] Combined ${textResults.length} text items & ${topicImages.length} visual resources.`);
+        } else {
+            console.log(`[Search] Skipped query extraction. Processing direct text response for: "${latestUserMessage}"`);
+        }
+
         const hasAttachments = messages?.some(m => m.attachments?.length > 0);
         const attachments = hasAttachments
             ? messages.filter(m => m.attachments?.length > 0).flatMap(m => m.attachments)
             : [];
 
-        if (searchQuery.length > 300) {
-            searchQuery = searchQuery.substring(0, 300) + '...';
-        }
-
-        console.log(`[Search] Forwarding query to Tavily and YouTube (${searchQuery.length} chars)`);
-        const [tavilyResults, youtubeResults] = await Promise.all([
-            fetchTavilySearch(searchQuery, 'web', 5),
-            fetchYoutubeSearch(searchQuery, 5).catch(err => {
-                console.error('[Search] YouTube search failed:', err.message);
-                return { query: searchQuery, count: 0, videos: [] };
-            })
-        ]);
-
-        const textResults = [
-            ...(tavilyResults.items || []),
-            ...(youtubeResults.videos || []).map(v => {
-                let displayLink = 'youtube.com';
-                try {
-                    if (v.url) {
-                        displayLink = new URL(v.url).hostname;
-                    }
-                } catch (e) {
-                    // Safe fallback
-                }
-                return {
-                    title: v.title,
-                    link: v.url,
-                    snippet: v.description,
-                    displayLink,
-                    thumbnail: v.thumbnail
-                };
-            })
-        ];
-
-        // Gathers visual sources (YouTube thumbnails and top-level Tavily related web images)
-        const topicImages = [
-            ...(tavilyResults.images || []),
-            ...(youtubeResults.videos || []).map(v => v.thumbnail).filter(Boolean)
-        ];
-
-        const combinedContext = {
-            search_items: textResults,
-            visual_assets: topicImages
-        };
-
-        console.log(`[Search] Combined ${textResults.length} text items & ${topicImages.length} visual resources.`);
-        
         const responseText = await executeSingleModelResponse(latestUserMessage, mode, combinedContext, attachments);
 
         res.json({ text: responseText });
@@ -882,9 +866,7 @@ app.post('/api/chat', async (req, res) => {
     }
 });
 
-// -----------------------------------------------------------
-// ADMIN CHECK ROUTE
-// -----------------------------------------------------------
+// --- ADMIN CHECK ROUTE ---
 app.post('/api/check-admin', (req, res) => {
     const { email } = req.body;
     const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
