@@ -3,45 +3,25 @@ const cors = require('cors');
 // Use native fetch if available on newer Node.js versions, preventing CommonJS require crashes
 const fetch = globalThis.fetch || require('node-fetch');
 const path = require('path');
-const { google } = require('googleapis');
-const PdfPrinter = require('pdfmake');
 require('dotenv').config();
+
+// Initialize pdfmake with default virtual printer standard core fonts
+const PdfPrinter = require('pdfmake');
+const fonts = {
+    Helvetica: {
+        normal: 'Helvetica',
+        bold: 'Helvetica-Bold',
+        italics: 'Helvetica-Oblique',
+        bolditalics: 'Helvetica-BoldOblique'
+    }
+};
+const printer = new PdfPrinter(fonts);
 
 const app = express();
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(cors());
-
-// --- SERVER-SIDE PDFMAKE FONT CONFIGURATION ---
-// Server-side pdfmake requires localized .ttf font files.
-// Please ensure you have a "fonts" folder at your project root containing these files,
-// or install the 'roboto-fontface' library and map paths accordingly.
-const fonts = {
-    Roboto: {
-        normal: path.join(__dirname, 'fonts/Roboto-Regular.ttf'),
-        bold: path.join(__dirname, 'fonts/Roboto-Medium.ttf'),
-        italics: path.join(__dirname, 'fonts/Roboto-Italic.ttf'),
-        bolditalics: path.join(__dirname, 'fonts/Roboto-MediumItalic.ttf')
-    }
-};
-
-// --- GMAIL OAUTH2 CLIENT INITIALIZATION ---
-const oauth2Client = new google.auth.OAuth2(
-    process.env.GMAIL_CLIENT_ID,
-    process.env.GMAIL_CLIENT_SECRET,
-    process.env.GMAIL_REDIRECT_URI || 'https://developers.google.com/oauthplayground'
-);
-
-if (process.env.GMAIL_REFRESH_TOKEN) {
-    oauth2Client.setCredentials({
-        refresh_token: process.env.GMAIL_REFRESH_TOKEN
-    });
-} else {
-    console.warn('[Gmail API] WARNING: GMAIL_REFRESH_TOKEN is not defined in environment variables.');
-}
-
-const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
 // --- CONFIG & KEYS ---
 const KEYS = {
@@ -54,6 +34,8 @@ const KEYS = {
 const MODELS = {
     chat: { 
         groq: 'llama-3.3-70b-versatile', 
+        gemini: 'gemini-2.5-flash',
+        openrouter: 'openrouter/free'
     },
     code: { 
         groq: 'llama-3.3-70b-specdec', 
@@ -545,7 +527,7 @@ app.delete('/api/chats/:filename', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// PDF EXPORT ROUTE: Generate PDF from chat history
+// PDF EXPORT ROUTE: Generate true PDF binary from chat history
 // -----------------------------------------------------------
 app.get('/api/chats/:filename/pdf', async (req, res) => {
     const filename = getSafeFilename(req.params.filename);
@@ -574,32 +556,88 @@ app.get('/api/chats/:filename/pdf', async (req, res) => {
 
         const chatData = await response.json();
         const history = chatData.history || [];
-        
+        const chatTitle = chatData.title || 'Chat Export';
+
+        // 1. Compile the Document Content Structure 
+        const docContent = [
+            { text: chatTitle, style: 'header' },
+            { text: `Exported on: ${new Date().toLocaleString()}`, style: 'subHeader' },
+            { canvas: [{ type: 'line', x1: 0, y1: 5, x2: 515, y2: 5, lineWidth: 1.5, color: '#e0e0e0' }] },
+            { text: '\n' }
+        ];
+
+        // 2. Iterate dynamically over chat context frames
+        history.forEach(msg => {
+            const isUser = msg.role === 'user';
+            
+            docContent.push({
+                text: isUser ? '👤 User' : '🤖 Assistant',
+                style: isUser ? 'userLabel' : 'aiLabel'
+            });
+
+            docContent.push({
+                text: msg.content || '',
+                style: 'messageBody'
+            });
+
+            // Thin separation divider rule
+            docContent.push({ 
+                canvas: [{ type: 'line', x1: 0, y1: 10, x2: 515, y2: 10, lineWidth: 0.5, color: '#f0f0f0' }] 
+            });
+            docContent.push({ text: '\n' });
+        });
+
+        // 3. Define formatting styles targeting standard base fonts
         const docDefinition = {
-            content: [
-                { text: chatData.title || 'Chat Export', fontSize: 20, bold: true, margin: [0, 0, 0, 10] },
-                ...history.flatMap(msg => [
-                    { text: `${msg.role}:`, bold: true, margin: [0, 5, 0, 2] },
-                    { text: msg.content || '', margin: [0, 0, 0, 10] }
-                ])
-            ],
+            content: docContent,
             defaultStyle: {
-                font: 'Roboto'
+                font: 'Helvetica'
+            },
+            styles: {
+                header: {
+                    fontSize: 22,
+                    bold: true,
+                    color: '#1a1a1a'
+                },
+                subHeader: {
+                    fontSize: 10,
+                    italics: true,
+                    color: '#666666'
+                },
+                userLabel: {
+                    fontSize: 11,
+                    bold: true,
+                    color: '#2563eb', // Clean Blue
+                    margin: [0, 5, 0, 2]
+                },
+                aiLabel: {
+                    fontSize: 11,
+                    bold: true,
+                    color: '#059669', // Emerald Green
+                    margin: [0, 5, 0, 2]
+                },
+                messageBody: {
+                    fontSize: 11,
+                    lineHeight: 1.4,
+                    color: '#374151',
+                    margin: [5, 2, 5, 5]
+                }
             }
         };
 
-        const printer = new PdfPrinter(fonts);
-        const pdfDocStream = printer.createPdfKitDocument(docDefinition);
-
+        // 4. Create binary stream architecture and output response payload
+        const pdfDoc = printer.createPdfKitDocument(docDefinition);
+        
+        const cleanDownloadName = filename.replace('.json', '.pdf');
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="${filename.replace('.json', '.pdf')}"`);
+        res.setHeader('Content-Disposition', `attachment; filename="${cleanDownloadName}"`);
 
-        pdfDocStream.pipe(res);
-        pdfDocStream.end();
+        pdfDoc.pipe(res);
+        pdfDoc.end();
 
     } catch (err) {
         console.error("PDF export failure:", err);
-        res.status(500).json({ error: "Failed to generate PDF.", details: err.message });
+        res.status(500).json({ error: "Failed to generate document.", details: err.message });
     }
 });
 
@@ -721,7 +759,7 @@ app.post('/api/youtube/search', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// GOOGLE DRIVE ROUTE: List Files
+// GOOGLE DRIVE ROUTE: List Files (using direct fetch)
 // -----------------------------------------------------------
 app.get('/api/drive/files', async (req, res) => {
     const API_KEY = process.env.GOOGLE_DRIVE_API_KEY;
@@ -729,12 +767,14 @@ app.get('/api/drive/files', async (req, res) => {
         return res.status(500).json({ error: 'Server: GOOGLE_DRIVE_API_KEY is missing.' });
     }
     try {
-        const drive = google.drive({ version: 'v3', auth: API_KEY });
-        const response = await drive.files.list({
-            pageSize: 100,
-            fields: 'files(id, name, mimeType, modifiedTime)'
-        });
-        res.json({ files: response.data.files || [] });
+        const url = `https://www.googleapis.com/drive/v3/files?pageSize=100&fields=files(id,name,mimeType,modifiedTime)&key=${API_KEY}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!response.ok) {
+            console.error('Drive API Error:', data);
+            return res.status(response.status).json({ error: data.error?.message || 'Drive API failed' });
+        }
+        res.json({ files: data.files || [] });
     } catch (err) {
         console.error('Google Drive error:', err);
         res.status(500).json({ error: 'Failed to list Drive files.' });
@@ -746,10 +786,11 @@ app.get('/api/drive/files', async (req, res) => {
 // -----------------------------------------------------------
 app.post('/api/gmail/alert', async (req, res) => {
     const { to, subject, message } = req.body;
+    const accessToken = process.env.GMAIL_ACCESS_TOKEN;
 
-    if (!process.env.GMAIL_CLIENT_ID || !process.env.GMAIL_CLIENT_SECRET || !process.env.GMAIL_REFRESH_TOKEN) {
+    if (!accessToken) {
         return res.status(500).json({ 
-            error: 'Server: Gmail OAuth client configurations or refresh tokens are missing.' 
+            error: 'Server: GMAIL_ACCESS_TOKEN is missing.' 
         });
     }
 
@@ -773,10 +814,19 @@ app.post('/api/gmail/alert', async (req, res) => {
             .replace(/\//g, '_')
             .replace(/=+$/, '');
 
-        await gmail.users.messages.send({
-            userId: 'me',
-            requestBody: { raw: encodedMessage }
+        const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ raw: encodedMessage })
         });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error?.message || 'Gmail API error');
+        }
 
         res.json({ success: true });
     } catch (err) {
