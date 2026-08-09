@@ -1,9 +1,34 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const morgan = require('morgan');
 // Use native fetch if available on newer Node.js versions, preventing CommonJS require crashes
 const fetch = globalThis.fetch || require('node-fetch');
 const path = require('path');
+const { body, validationResult } = require('express-validator');
 require('dotenv').config();
+
+// Simple structured logger: emits JSON lines when LOG_JSON=true
+const LOG_JSON = process.env.LOG_JSON === 'true';
+const log = (level, ...args) => {
+    const stack = new Error().stack?.split('\n')[2] || '';
+    const msg = args.map(a => (a && typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+    const entry = { level, message: msg, time: new Date().toISOString(), location: stack };
+    if (LOG_JSON) {
+        console.log(JSON.stringify(entry));
+    } else {
+        console.log(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg} (${stack})`);
+    }
+};
+const logger = (...args) => log('info', ...args);
+const loggerWarn = (...args) => log('warn', ...args);
+const loggerError = (...args) => log('error', ...args);
+logger.info = logger;
+logger.warn = loggerWarn;
+logger.error = loggerError;
+
+const REQUEST_LIMIT = process.env.REQUEST_LIMIT || '100mb';
 
 // Initialize pdfmake with default virtual printer standard core fonts
 const PdfPrinter = require('pdfmake');
@@ -19,9 +44,49 @@ const printer = new PdfPrinter(fonts);
 
 const app = express();
 
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ limit: '100mb', extended: true }));
+// Security headers
+app.use(helmet());
+
+// Structured HTTP request logging
+app.use(morgan(LOG_JSON ? 'combined' : 'dev', {
+    stream: {
+        write: (message) => {
+            if (message.trim()) logger(message.trim());
+        }
+    }
+}));
+
+// General rate limiter (applies to all routes)
+const limiter = rateLimit({
+    windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 60_000,
+    max: Number(process.env.RATE_LIMIT_MAX) || 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Rate limit exceeded. Please try again later.' }
+});
+app.use(limiter);
+
+// Stricter rate limiter for AI generation endpoints
+const aiLimiter = rateLimit({
+    windowMs: Number(process.env.AI_RATE_LIMIT_WINDOW_MS) || 60_000,
+    max: Number(process.env.AI_RATE_LIMIT_MAX) || 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'AI request rate limit exceeded. Please try again later.' }
+});
+
+app.use(express.json({ limit: REQUEST_LIMIT }));
+app.use(express.urlencoded({ limit: REQUEST_LIMIT, extended: true }));
 app.use(cors());
+
+// Generic validation result handler
+const validate = (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ error: 'Validation failed', details: errors.array() });
+    }
+    next();
+};
 
 // --- CONFIG & KEYS ---
 const TAVILY_KEYS_POOL = process.env.TAVILY_API_KEY 
@@ -33,10 +98,10 @@ const GEMINI_KEYS_POOL = process.env.GEMINI_API_KEY
     : [];
 
 const KEYS = {
-    groq: process.env.GROQ_API_KEY,
+    groq: process.env.GROQ_API_KEY ? process.env.GROQ_API_KEY.split(',').map(key => key.trim()).filter(Boolean) : [],
     gemini: GEMINI_KEYS_POOL,
-    openrouter: process.env.OPENROUTER_API_KEY,
-    tavily: process.env.TAVILY_API_KEY 
+    openrouter: process.env.OPENROUTER_API_KEY ? process.env.OPENROUTER_API_KEY.split(',').map(key => key.trim()).filter(Boolean) : [],
+    tavily: TAVILY_KEYS_POOL
 };
 
 // --- HELPER FUNCTIONS ---
@@ -135,57 +200,70 @@ const getKoofrBaseUrl = () => {
 // --- WATERFALL API ROUTING HELPERS ---
 
 async function callOpenRouter(systemPrompt, contextString, message) {
-    if (!KEYS.openrouter) throw new Error("OpenRouter credentials missing in environment settings.");
+    if (!KEYS.openrouter || KEYS.openrouter.length === 0) throw new Error("OpenRouter credentials missing in environment settings.");
     const openRouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
-    const response = await fetch(openRouterUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${KEYS.openrouter}`,
-            'HTTP-Referer': 'https://joes-ai-server.onrender.com',
-            'X-Title': 'Joes AI Workspace'
-        },
-        body: JSON.stringify({
-            model: 'openrouter/free',
-            messages: [
-                { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` },
-                { role: 'user', content: `User Request: ${message}\n\nUse the search results above to provide an accurate, polished response.` }
-            ]
-        })
-    });
-
-    const data = await response.json();
-    if (!response.ok) {
-        throw new Error(data?.error?.message || `OpenRouter API returned HTTP status ${response.status}`);
+    let attempt = 0;
+    while (attempt < KEYS.openrouter.length) {
+        const key = KEYS.openrouter[attempt];
+        try {
+            const response = await fetch(openRouterUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${key}`,
+                    'HTTP-Referer': 'https://joes-ai-server.onrender.com',
+                    'X-Title': 'Joes AI Workspace'
+                },
+                body: JSON.stringify({
+                    model: 'openrouter/free',
+                    messages: [
+                        { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` },
+                        { role: 'user', content: `User Request: ${message}\n\nUse the search results above to provide an accurate, polished response.` }
+                    ]
+                })
+            });
+            const data = await response.json();
+            if (response.ok) {
+                if (data?.choices?.[0]?.message?.content) {
+                    return data.choices[0].message.content;
+                }
+                throw new Error("OpenRouter completion response payload structure is missing standard content field.");
+            }
+            loggerWarn(`[OpenRouter] Key [${attempt}] failed: ${data?.error?.message || `HTTP status ${response.status}`}`);
+        } catch (err) {
+            loggerError(`[OpenRouter] Key [${attempt}] error: ${err.message}`);
+        }
+        attempt++;
     }
-    if (data?.choices?.[0]?.message?.content) {
-        return data.choices[0].message.content;
-    }
-    throw new Error("OpenRouter completion response payload structure is missing standard content field.");
+    throw new Error("All OpenRouter keys failed.");
 }
 
-async function callGeminiStudy(systemPrompt, contextString, message) {
-    if (!KEYS.gemini) throw new Error("Gemini credentials missing in environment settings.");
-    const studyGeminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
-    const studyParts = [{ 
-        text: `${systemPrompt}\n\n` +
-              `User Request: ${message}\n` +
-              `Search Results: ${contextString}\n\n` +
-              `Please use the search results above to provide an accurate, structured academic response with diagrams and quiz questions where appropriate.`
-    }];
-    const response = await fetch(studyGeminiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents: [{ role: 'user', parts: studyParts }],
-            systemInstruction: { parts: [{ text: systemPrompt }] }
-        })
-    });
-    const data = await response.json();
-    if (!response.ok) {
-        throw new Error(data?.error?.message || `Gemini Study API returned HTTP status ${response.status}`);
+async function callGemini(systemPrompt, contextString, message) {
+    if (!KEYS.gemini || KEYS.gemini.length === 0) throw new Error("Gemini credentials missing in environment settings.");
+    for (let i = 0; i < KEYS.gemini.length; i++) {
+        const key = KEYS.gemini[i];
+        try {
+            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`;
+            const parts = [{ text: `${systemPrompt}\n\nUser Request: ${message}\n\nSearch Results: ${contextString}` }];
+
+            const response = await fetch(geminiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{ role: 'user', parts }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] }
+                })
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data?.error?.message || `Gemini API returned HTTP status ${response.status}`);
+            }
+            return data.candidates?.[0]?.content?.parts?.[0]?.text || "Gemini returned empty candidate text content.";
+        } catch (err) {
+            loggerWarn(`[Gemini] Key index [${i}] failed:`, err.message);
+        }
     }
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "Gemini returned empty candidate text content.";
+    throw new Error("All Gemini keys failed.");
 }
 
 async function callGroq(systemPrompt, contextString, message) {
