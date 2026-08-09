@@ -197,6 +197,51 @@ const getKoofrBaseUrl = () => {
     return url.endsWith('/') ? url : `${url}/`;
 };
 
+// --- SESSION MEMORY STORE (TTL-based, ~40 minute retention) ---
+const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS) || 40 * 60 * 1000;
+const SESSION_MAX_MESSAGES = Number(process.env.SESSION_MAX_MESSAGES) || 20;
+
+const sessionStore = new Map();
+const sessionCleanupInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [id, data] of sessionStore.entries()) {
+        if (now - data.updatedAt > SESSION_TTL_MS) sessionStore.delete(id);
+    }
+}, 5 * 60 * 1000);
+
+function getSessionMemory(sessionId) {
+    const session = sessionStore.get(sessionId);
+    if (!session || Date.now() - session.updatedAt > SESSION_TTL_MS) {
+        if (session) sessionStore.delete(sessionId);
+        return [];
+    }
+    return session.messages;
+}
+
+function persistSessionMemory(sessionId, history) {
+    sessionStore.set(sessionId, {
+        messages: history.slice(-SESSION_MAX_MESSAGES),
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+    });
+}
+
+// --- SEARCH HEURISTIC: only query Google/Youtube when genuinely needed ---
+const UNCERTAIN_MARKERS = /^(what is|who is|where is|when was|list|explain|how to|why does|compare|difference between|summarize|can you recommend|latest|recent|new|best|price|cost|salary|population|data|statistics|forecast|schedule|deadline|event|release date)/i;
+const FACTUAL_PATTERN = /(\b\d{4}\b|vs\.?|versus|percentage|percent|probability|stock|weather|news|update|current rate|temperature)/i;
+
+function needsExternalSearch(query) {
+    if (!query || typeof query !== 'string') return false;
+    const text = query.trim().toLowerCase();
+    if (text.length <= 5) return false;
+    if (/^(hi|hello|hey|thanks|ok|okay|yes|no|sure|got it|gotcha|cool|alright)/i.test(text)) return false;
+    if (UNCERTAIN_MARKERS.test(text)) return true;
+    if (FACTUAL_PATTERN.test(text)) return true;
+    // Question words + non-trivial length typically indicate a request for factual grounding
+    if (/\b(who|what|when|where|how|which|why)\b/.test(text) && text.length > 40) return true;
+    return false;
+}
+
 // --- WATERFALL API ROUTING HELPERS ---
 
 async function callOpenRouter(systemPrompt, contextString, message) {
