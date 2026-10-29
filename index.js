@@ -113,7 +113,7 @@ function getSystemPrompt(mode) {
         "1. TABLES: MUST use strict GitHub Flavored Markdown. You MUST include the header separator row (e.g., | Header | Header |\n|---|---|). Never output smashed text.\n" +
         "2. DIAGRAMS & VISUALS: Generate Mermaid or real images ![Alt text](image_url). You are provided with direct image URLs and video thumbnails in the search context. If relevant, you MUST display them to the user using Markdown images, for example as a clickable thumbnail: [![Watch Video](thumbnail_url)](video_url) or direct image embeds: ![Topic Image](image_url) to visually enrich your response.\n" +
         "3. STRUCTURED OUTPUT: Clear headings, bullet points. No filler text.\n" +
-        "4. CITATIONS: Include inline references. Use reliable sources and also never include ##### in responses. ";
+        "4. CITATIONS: When Search Results are provided, cite them inline using [1], [2], etc. and include the source URL. Never include ##### in responses. ";
 
     switch(mode) {
         case 'code':
@@ -131,6 +131,75 @@ const getKoofrBaseUrl = () => {
     if (!url) return null;
     return url.endsWith('/') ? url : `${url}/`;
 };
+
+/**
+ * Heuristic classifier: decides whether a user message genuinely requires a live
+ * web search. Avoids calling Tavily/YouTube for greetings, chit-chat, math,
+ * coding help, creative writing, and general-knowledge questions where recency
+ * does not matter. Saves API cost and reduces latency.
+ */
+function shouldUseWebSearch(message) {
+    const text = (message || '').trim();
+    if (!text) return false;
+    if (text.length <= 3) return false;
+    const lower = text.toLowerCase();
+
+    // Pure greetings / chit-chat never need search.
+    if (/^(hi|hello|hey|hola|greetings|yo|sup|good\s*(morning|afternoon|evening))[\s!.]*$/i.test(text)) {
+        return false;
+    }
+
+    // Time-sensitive / current-event signals that justify a live search.
+    const currentSignals = [
+        'today', 'now', 'currently', 'latest', 'recent', 'this week', 'this month', 'this year',
+        'breaking', 'news', 'headline', 'just released', 'just launched', 'announced',
+        'weather', 'temperature', 'forecast', 'sports', 'score', 'match', 'game', 'won', 'lost',
+        'stock', 'price', 'crypto', 'bitcoin', 'exchange rate', 'what happened', 'who won',
+        'current status', 'is still', 'tomorrow', 'yesterday', '2024', '2025', '2026'
+    ];
+    const hasCurrentSignal = currentSignals.some(k => lower.includes(k));
+
+    // Purely static tasks (creative, educational, general knowledge, code) that
+    // do not benefit from recency. Still allow search when a current signal is present
+    // (e.g. "write code to fetch the latest weather").
+    const noSearchSignals = [
+        'write a story', 'write a poem', 'write an essay', 'write code', 'write a function',
+        'write a script', 'create a', 'build a', 'make a website', 'html', 'css', 'javascript',
+        'python', 'react', 'node.js', 'api', 'endpoint', 'database', 'sql', 'query', 'explain',
+        'how does', 'how to', 'what is', 'definition', 'meaning of', 'translate', 'summarize',
+        'summary', 'rewrite', 'paraphrase', 'math', 'calculate', 'solve', 'equation', 'plus',
+        'minus', 'divide', 'times'
+    ];
+    const isPurelyStatic = noSearchSignals.some(k => lower.includes(k));
+
+    if (hasCurrentSignal) return true;
+    return false;
+}
+
+/**
+ * Formats aggregated search results into a compact, model-friendly context block
+ * with numbered items so the assistant can cite them inline as [1], [2], etc.
+ */
+function formatSearchContext(searchResults) {
+    const items = searchResults?.search_items || [];
+    const visuals = searchResults?.visual_assets || [];
+    if (!items.length && !visuals.length) {
+        return 'No search results available.';
+    }
+    const parts = ['Search Results:'];
+    items.forEach((item, i) => {
+        parts.push(
+            `[${i + 1}] ${item.title || ''}\n` +
+            `URL: ${item.link || ''}\n` +
+            `Snippet: ${item.snippet || ''}`
+        );
+    });
+    if (visuals.length) {
+        parts.push('\nVisual Assets:');
+        visuals.forEach((v, i) => parts.push(`[IMG ${i + 1}] ${v}`));
+    }
+    return parts.join('\n\n');
+}
 
 // --- WATERFALL API ROUTING HELPERS ---
 
@@ -328,9 +397,8 @@ async function fetchYoutubeSearch(query, maxResults = 5) {
 /**
  * SINGLE MODEL RESPONSE ENGINE WITH FAILOVER WATERFALL
  */
-async function executeSingleModelResponse(message, mode, searchResults, attachments = []) {
+async function executeSingleModelResponse(message, mode, contextString, attachments = []) {
     const systemPrompt = getSystemPrompt(mode);
-    const contextString = JSON.stringify(searchResults, null, 2);
     const hasAttachments = attachments && attachments.length > 0;
 
     // Attachments strictly route to Gemini first for multimodal processing
@@ -876,10 +944,13 @@ app.post('/api/chat', async (req, res) => {
             ? userMessages[userMessages.length - 1].content
             : 'General inquiry';
 
-        // Guardrail: Skip search engine for basic greetings or short conversational inputs
+        // Guardrail: Skip search engine for basic greetings or short conversational inputs.
+        // Use intelligent detection so websearch only runs when recency is actually needed.
+        const clientSkipSearch = req.body.skipSearch === true;
+        const clientForceSearch = req.body.forceSearch === true;
         const isGreeting = /^(hi|hello|hey|hola|greetings|yo|sup|good\s*(morning|afternoon|evening))[\s!.]*$/i.test(latestUserMessage.trim());
         const isTooShort = latestUserMessage.trim().length <= 3;
-        const needsSearch = !isGreeting && !isTooShort;
+        const needsSearch = clientForceSearch || (!clientSkipSearch && !isGreeting && !isTooShort && shouldUseWebSearch(latestUserMessage));
 
         let combinedContext = {
             search_items: [],
@@ -945,8 +1016,10 @@ app.post('/api/chat', async (req, res) => {
         } else {
             console.log(`[Search] Skipped query extraction. Processing direct text response for conversational intent: "${latestUserMessage}"`);
         }
-        
-        const responseText = await executeSingleModelResponse(latestUserMessage, mode, combinedContext, attachments);
+
+        const contextString = formatSearchContext(combinedContext);
+
+        const responseText = await executeSingleModelResponse(latestUserMessage, mode, contextString, attachments);
 
         res.json({ text: responseText });
 
