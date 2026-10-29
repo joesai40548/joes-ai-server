@@ -117,20 +117,23 @@ function getSystemPrompt(mode) {
         "You were developed and are owned entirely by AKRAM JOES TECHNOLOGIES. " +
         "If any user asks you who developed you, who owns you, or who built you, you must answer proudly that you were developed and are owned by AKRAM JOES TECHNOLOGIES. " +
         "Never state that you are developed by Google, Meta, OpenAI, or anyone else. " +
-        "CRITICAL OUTPUT REQUIREMENTS:\n" +
-        "1. TABLES: MUST use strict GitHub Flavored Markdown. You MUST include the header separator row (e.g., | Header | Header |\n|---|---|). Never output smashed text.\n" +
-        "2. DIAGRAMS & VISUALS: Generate Mermaid or real images ![Alt text](image_url). You are provided with direct image URLs and video thumbnails in the search context. If relevant, you MUST display them to the user using Markdown images, for example as a clickable thumbnail: [![Watch Video](thumbnail_url)](video_url) or direct image embeds: ![Topic Image](image_url) to visually enrich your response.\n" +
-        "3. STRUCTURED OUTPUT: Clear headings, bullet points. No filler text.\n" +
-        "4. CITATIONS: When Search Results are provided, cite them inline using [1], [2], etc. and include the source URL. Never include ##### in responses. ";
+        "RESPONSE STANDARDS:\n" +
+        "1. THINKING: Show brief reasoning steps before answering complex questions. Use a short 'Reasoning' section.\n" +
+        "2. TABLES: MUST use strict GitHub Flavored Markdown tables with header separator row. Never output smashed text.\n" +
+        "3. DIAGRAMS & VISUALS: Generate Mermaid diagrams or Markdown images. Display thumbnails and images when relevant.\n" +
+        "4. STRUCTURED OUTPUT: Clear headings, bullet points, numbered steps. No filler text, no apologies, no meta-commentary.\n" +
+        "5. CITATIONS: When Search Results are provided, cite them inline using [1], [2], etc. and include source URLs at the end.\n" +
+        "6. MEMORY: Reference earlier parts of this conversation when relevant. Maintain context across turns.\n" +
+        "7. TONE: Professional yet conversational. Be direct, accurate, and helpful. Never include ##### in responses. ";
 
     switch(mode) {
         case 'code':
-            return `${creatorIdentity} You are CODE MODE - senior software architect. Provide production-grade code. Use sparse technical emojis (💻, ⚙️).`;
+            return `${creatorIdentity} You are CODE MODE - senior software architect. Provide production-grade, secure code with comments. Use sparse technical emojis (💻, ⚙️).`;
         case 'study':
-            return `${creatorIdentity} You are STUDY MODE - academic tutor. Structured step-by-step. Include diagrams and 10 quiz questions.`;
+            return `${creatorIdentity} You are STUDY MODE - academic tutor. Structured step-by-step explanations with diagrams and 10 quiz questions.`;
         case 'chat':
         default:
-            return `${creatorIdentity} You are CHAT MODE - friendly companion. Conversational with relevant emojis.`;
+            return `${creatorIdentity} You are CHAT MODE - friendly companion. Conversational with relevant emojis. Remember previous context from this conversation.`;
     }
 }
 
@@ -197,9 +200,20 @@ function formatSearchContext(searchResults) {
 
 // --- WATERFALL API ROUTING HELPERS ---
 
-async function callOpenRouter(systemPrompt, contextString, message) {
+async function callOpenRouter(systemPrompt, contextString, messages = []) {
     if (!KEYS.openrouter) throw new Error("OpenRouter credentials missing in environment settings.");
     const openRouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
+
+    const openAiMessages = [
+        { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` }
+    ];
+
+    messages.forEach(m => {
+        if (m.role === 'user' || m.role === 'assistant') {
+            openAiMessages.push({ role: m.role, content: m.content || '' });
+        }
+    });
+
     const response = await fetch(openRouterUrl, {
         method: 'POST',
         headers: {
@@ -210,10 +224,7 @@ async function callOpenRouter(systemPrompt, contextString, message) {
         },
         body: JSON.stringify({
             model: 'openrouter/free',
-            messages: [
-                { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` },
-                { role: 'user', content: `User Request: ${message}\n\nUse the search results above to provide an accurate, polished response.` }
-            ]
+            messages: openAiMessages
         })
     });
 
@@ -227,21 +238,35 @@ async function callOpenRouter(systemPrompt, contextString, message) {
     throw new Error("OpenRouter completion response payload structure is missing standard content field.");
 }
 
-async function callGeminiStudy(systemPrompt, contextString, message) {
+async function callGeminiStudy(systemPrompt, contextString, messages = []) {
     const geminiKey = getGeminiApiKey();
     if (!geminiKey) throw new Error("Gemini credentials missing in environment settings.");
     const studyGeminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
-    const studyParts = [{ 
-        text: `${systemPrompt}\n\n` +
-              `User Request: ${message}\n` +
-              `Search Results: ${contextString}\n\n` +
-              `Please use the search results above to provide an accurate, structured academic response with diagrams and quiz questions where appropriate.`
-    }];
+
+    const contents = [];
+    messages.forEach(m => {
+        if (m.role === 'user' || m.role === 'assistant') {
+            contents.push({
+                role: m.role === 'user' ? 'user' : 'model',
+                parts: [{ text: m.content || '' }]
+            });
+        }
+    });
+
+    contents.push({
+        role: 'user',
+        parts: [{
+            text: `${systemPrompt}\n\n` +
+                  `Search Results: ${contextString}\n\n` +
+                  `Please use the search results above and the conversation history to provide an accurate, structured academic response with diagrams and quiz questions where appropriate.`
+        }]
+    });
+
     const response = await fetch(studyGeminiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            contents: [{ role: 'user', parts: studyParts }],
+            contents: contents,
             systemInstruction: { parts: [{ text: systemPrompt }] }
         })
     });
@@ -252,9 +277,20 @@ async function callGeminiStudy(systemPrompt, contextString, message) {
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "Gemini returned empty candidate text content.";
 }
 
-async function callGroq(systemPrompt, contextString, message) {
+async function callGroq(systemPrompt, contextString, messages = []) {
     if (!KEYS.groq) throw new Error("Groq credentials missing in environment settings.");
     const groqUrl = 'https://api.groq.com/openai/v1/chat/completions';
+
+    const groqMessages = [
+        { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` }
+    ];
+
+    messages.forEach(m => {
+        if (m.role === 'user' || m.role === 'assistant') {
+            groqMessages.push({ role: m.role, content: m.content || '' });
+        }
+    });
+
     const response = await fetch(groqUrl, {
         method: 'POST',
         headers: {
@@ -263,10 +299,7 @@ async function callGroq(systemPrompt, contextString, message) {
         },
         body: JSON.stringify({
             model: 'llama-3.3-70b-versatile',
-            messages: [
-                { role: 'system', content: `${systemPrompt}\n\nSearch Results:\n${contextString}` },
-                { role: 'user', content: `User Request: ${message}\n\nUse the search results above to provide an accurate, polished response.` }
-            ]
+            messages: groqMessages
         })
     });
 
@@ -400,9 +433,10 @@ async function fetchYoutubeSearch(query, maxResults = 5) {
 /**
  * SINGLE MODEL RESPONSE ENGINE WITH FAILOVER WATERFALL
  */
-async function executeSingleModelResponse(message, mode, contextString, attachments = []) {
+async function executeSingleModelResponse(mode, contextString, attachments = [], messages = []) {
     const systemPrompt = getSystemPrompt(mode);
     const hasAttachments = attachments && attachments.length > 0;
+    const latestUserMessage = messages?.filter(m => m.role === 'user')?.pop()?.content || 'General inquiry';
 
     // Attachments strictly route to Gemini first for multimodal processing
     if (hasAttachments) {
@@ -414,7 +448,7 @@ async function executeSingleModelResponse(message, mode, contextString, attachme
             
             const parts = [{ 
                 text: `${systemPrompt}\n\n` +
-                      `User Request: ${message}\n` +
+                      `User Request: ${latestUserMessage}\n` +
                       `Search Results: ${contextString}\n\n` +
                       `[ATTACHMENTS DETECTED - ANALYZE THESE FILES]\n\n` +
                       `Please analyze the attached files and incorporate your findings into your response.`
@@ -457,18 +491,18 @@ async function executeSingleModelResponse(message, mode, contextString, attachme
     const generationWaterfall = [];
 
     if (mode === 'code') {
-        generationWaterfall.push({ name: 'OpenRouter', call: () => callOpenRouter(systemPrompt, contextString, message) });
-        generationWaterfall.push({ name: 'Groq', call: () => callGroq(systemPrompt, contextString, message) });
-        generationWaterfall.push({ name: 'Gemini (Study Fallback)', call: () => callGeminiStudy(systemPrompt, contextString, message) });
+        generationWaterfall.push({ name: 'OpenRouter', call: () => callOpenRouter(systemPrompt, contextString, messages) });
+        generationWaterfall.push({ name: 'Groq', call: () => callGroq(systemPrompt, contextString, messages) });
+        generationWaterfall.push({ name: 'Gemini (Study Fallback)', call: () => callGeminiStudy(systemPrompt, contextString, messages) });
     } else if (mode === 'study') {
-        generationWaterfall.push({ name: 'Gemini (Flash)', call: () => callGeminiStudy(systemPrompt, contextString, message) });
-        generationWaterfall.push({ name: 'Groq', call: () => callGroq(systemPrompt, contextString, message) });
-        generationWaterfall.push({ name: 'OpenRouter', call: () => callOpenRouter(systemPrompt, contextString, message) });
+        generationWaterfall.push({ name: 'Gemini (Flash)', call: () => callGeminiStudy(systemPrompt, contextString, messages) });
+        generationWaterfall.push({ name: 'Groq', call: () => callGroq(systemPrompt, contextString, messages) });
+        generationWaterfall.push({ name: 'OpenRouter', call: () => callOpenRouter(systemPrompt, contextString, messages) });
     } else {
         // Chat mode and default fallbacks
-        generationWaterfall.push({ name: 'Groq', call: () => callGroq(systemPrompt, contextString, message) });
-        generationWaterfall.push({ name: 'Gemini (Study Fallback)', call: () => callGeminiStudy(systemPrompt, contextString, message) });
-        generationWaterfall.push({ name: 'OpenRouter', call: () => callOpenRouter(systemPrompt, contextString, message) });
+        generationWaterfall.push({ name: 'Groq', call: () => callGroq(systemPrompt, contextString, messages) });
+        generationWaterfall.push({ name: 'Gemini (Study Fallback)', call: () => callGeminiStudy(systemPrompt, contextString, messages) });
+        generationWaterfall.push({ name: 'OpenRouter', call: () => callOpenRouter(systemPrompt, contextString, messages) });
     }
 
     // Sequentially evaluate waterfall providers 
@@ -1023,9 +1057,22 @@ app.post('/api/chat', async (req, res) => {
 
         const contextString = formatSearchContext(combinedContext);
 
-        const responseText = await executeSingleModelResponse(latestUserMessage, mode, contextString, attachments);
+        const responseText = await executeSingleModelResponse(mode, contextString, attachments, messages);
 
-        res.json({ text: responseText });
+        const sources = combinedContext.search_items?.map((item, i) => ({
+            id: i + 1,
+            title: item.title || '',
+            url: item.link || '',
+            snippet: item.snippet || ''
+        })) || [];
+
+        res.json({
+            text: responseText,
+            searchUsed: needsSearch,
+            sources: sources,
+            visualAssets: combinedContext.visual_assets || [],
+            mode: mode || 'chat'
+        });
 
     } catch (error) {
         console.error('Adaptive chat single-model processing failed:', error);
