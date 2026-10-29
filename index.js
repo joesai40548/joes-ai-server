@@ -32,6 +32,14 @@ const GEMINI_KEYS_POOL = process.env.GEMINI_API_KEY
     ? process.env.GEMINI_API_KEY.split(',').map(key => key.trim()).filter(Boolean)
     : [];
 
+let geminiKeyIndex = 0;
+function getGeminiApiKey() {
+    if (!GEMINI_KEYS_POOL || GEMINI_KEYS_POOL.length === 0) return null;
+    const key = GEMINI_KEYS_POOL[geminiKeyIndex % GEMINI_KEYS_POOL.length];
+    geminiKeyIndex++;
+    return key;
+}
+
 const KEYS = {
     groq: process.env.GROQ_API_KEY,
     gemini: GEMINI_KEYS_POOL,
@@ -159,21 +167,7 @@ function shouldUseWebSearch(message) {
     ];
     const hasCurrentSignal = currentSignals.some(k => lower.includes(k));
 
-    // Purely static tasks (creative, educational, general knowledge, code) that
-    // do not benefit from recency. Still allow search when a current signal is present
-    // (e.g. "write code to fetch the latest weather").
-    const noSearchSignals = [
-        'write a story', 'write a poem', 'write an essay', 'write code', 'write a function',
-        'write a script', 'create a', 'build a', 'make a website', 'html', 'css', 'javascript',
-        'python', 'react', 'node.js', 'api', 'endpoint', 'database', 'sql', 'query', 'explain',
-        'how does', 'how to', 'what is', 'definition', 'meaning of', 'translate', 'summarize',
-        'summary', 'rewrite', 'paraphrase', 'math', 'calculate', 'solve', 'equation', 'plus',
-        'minus', 'divide', 'times'
-    ];
-    const isPurelyStatic = noSearchSignals.some(k => lower.includes(k));
-
-    if (hasCurrentSignal) return true;
-    return false;
+    return hasCurrentSignal;
 }
 
 /**
@@ -234,8 +228,9 @@ async function callOpenRouter(systemPrompt, contextString, message) {
 }
 
 async function callGeminiStudy(systemPrompt, contextString, message) {
-    if (!KEYS.gemini) throw new Error("Gemini credentials missing in environment settings.");
-    const studyGeminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
+    const geminiKey = getGeminiApiKey();
+    if (!geminiKey) throw new Error("Gemini credentials missing in environment settings.");
+    const studyGeminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
     const studyParts = [{ 
         text: `${systemPrompt}\n\n` +
               `User Request: ${message}\n` +
@@ -336,13 +331,21 @@ async function fetchTavilySearch(query, searchType = 'web', count = 5) {
                 searchType,
                 count: data.results?.length || 0,
                 images: data.images || [], 
-                items: data.results?.map(item => ({
+            items: data.results?.map(item => {
+                let displayLink = '';
+                try {
+                    displayLink = new URL(item.url).hostname;
+                } catch (e) {
+                    displayLink = '';
+                }
+                return {
                     title: item.title,
                     link: item.url,
                     snippet: item.content,
-                    displayLink: new URL(item.url).hostname,
+                    displayLink,
                     images: item.images || [] 
-                })) || []
+                };
+            }) || []
             };
 
         } catch (err) {
@@ -404,9 +407,10 @@ async function executeSingleModelResponse(message, mode, contextString, attachme
     // Attachments strictly route to Gemini first for multimodal processing
     if (hasAttachments) {
         try {
-            if (!KEYS.gemini) throw new Error('Gemini API Key is missing.');
+            const geminiKey = getGeminiApiKey();
+            if (!geminiKey) throw new Error('Gemini API Key is missing.');
             console.log(`[Model Engine] Attachments detected. Routing to Gemini for file analysis...`);
-            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${KEYS.gemini}`;
+            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
             
             const parts = [{ 
                 text: `${systemPrompt}\n\n` +
